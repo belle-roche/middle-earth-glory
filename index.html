@@ -7158,8 +7158,8 @@
   /* ================= COMPTE ET SAUVEGARDES CLOUD (Supabase + connexion GitHub) ================= */
   // Projet Supabase du jeu. Pour désactiver le compte, laisse ces deux valeurs vides : le jeu reste alors 100 % hors ligne. La clé « anon » / « publishable » est publique par conception : c'est la table `saves`
   // (règles RLS, voir supabase_setup.sql) qui protège les données de chaque joueur. N'y mets JAMAIS la clé « service_role ».
-  const SUPABASE_URL = 'https://ubgrdwutztpzhjitikpd.supabase.co';
-  const SUPABASE_KEY = 'sb_publishable_8WVQYX2D0lL0yj55-2bEIA_ul5xOKkN';   // clé publique (publishable) : sans danger dans le code
+  const SUPABASE_URL = 'https://lejsbmytfjwqhnxkkzzz.supabase.co';
+  const SUPABASE_KEY = 'sb_publishable_PAd3nZ18UcM4V5d_xjzcMg__NGmk8Cw';   // clé publique (publishable) : sans danger dans le code
   const ENABLE_GITHUB_LOGIN = false;   // true : ajoute « Continuer avec GitHub » (il faut alors activer GitHub dans Supabase)
   const CLOUD_SLOTS = 3, CLOUD_MAX_CHARS = 3800000;
   const cloud = { sb:null, user:null, slots:[], loaded:false, busy:false, slot:0, owned:false, seen:{}, auto:true, lastAuto:0, msg:'', msgOk:false, warnedFull:false, form:{email:''} };
@@ -8090,4 +8090,4 @@
 })();
 </script>
 </body>
-</html>
+</html>>
