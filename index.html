@@ -34,8 +34,7 @@
   #app{
     display:flex; flex-direction:column;
     height:100%;
-    max-width:920px; margin:0 auto;
-    border-left:1px solid var(--border); border-right:1px solid var(--border);
+    width:100%; max-width:none; margin:0;
   }
 
   /* ---------- HUD ---------- */
@@ -902,6 +901,28 @@
     #menu-subtitle{ margin-bottom:0; font-size:13px; }
     #menu-main{ display:flex; flex-direction:column; }
   }
+
+  /* ---- Forge : arbre d'améliorations ---- */
+  #forge-modal{ width:min(1040px, 95%); max-height:92%; }
+  #fm-list{ overflow-y:auto; }
+  .ft-tree{ display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:16px; align-items:start; }
+  .ft-col{ display:flex; flex-direction:column; gap:10px; min-width:0; }
+  .ft-col-title{ font-family:'Cinzel',serif; font-weight:700; font-size:13px; letter-spacing:.04em; color:var(--gold); display:flex; align-items:center; gap:7px; padding-bottom:6px; border-bottom:1px solid var(--border); }
+  .ft-item{ display:flex; flex-direction:column; gap:8px; position:relative; }
+  .ft-children{ display:flex; flex-direction:column; gap:8px; margin-left:12px; padding-left:14px; border-left:2px solid rgba(216,174,87,.38); }
+  .ft-children > .ft-item::before{ content:''; position:absolute; left:-14px; top:20px; width:14px; border-top:2px solid rgba(216,174,87,.38); }
+  .ft-node{ border:1px solid var(--border); border-radius:10px; padding:9px 11px; background:rgba(255,255,255,.045); display:flex; flex-direction:column; gap:4px; min-width:0; }
+  .ft-node.max{ border-color:#5d8a45; background:rgba(110,170,80,.09); }
+  .ft-node.locked{ opacity:.62; }
+  .ft-node.busy{ border-color:var(--gold); box-shadow:0 0 0 1px rgba(216,174,87,.4); }
+  .ft-head{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  .ft-name{ font-family:'Cinzel',serif; font-weight:700; font-size:13px; display:flex; align-items:center; gap:6px; min-width:0; }
+  .ft-pips{ display:flex; gap:3px; flex:none; }
+  .ft-pips i{ width:9px; height:9px; border-radius:2px; border:1px solid var(--gold-dim); background:transparent; }
+  .ft-pips i.on{ background:var(--gold); }
+  .ft-cur{ color:#b9d8a0; }
+  .ft-node .cm-train-btn{ margin-top:4px; text-align:center; }
+  @media (max-width:880px){ .ft-tree{ grid-template-columns:1fr; } }
 </style>
 </head>
 <body>
@@ -1345,27 +1366,97 @@
     { name:'Âge Impérial', cost:{or:2400, nourriture:1200, pierre:400}, duration:45000 }
   ];
 
-  // Forge : 3 améliorations, 3 paliers chacune. Chaque palier est débloqué par un Âge (Féodal / Châteaux / Impérial).
+  // Forge : arbre d'améliorations (12 recherches, 3 paliers chacune). Chaque palier est débloqué par un Âge (Féodal / Châteaux / Impérial)
+  // et certaines recherches demandent d'abord un palier d'une autre (champ req). Une seule recherche à la fois.
+  const FORGE_BRANCHES = [
+    { id:'combat', name:'Combat',         icon:ICO('epees') },
+    { id:'eco',    name:'Économie',       icon:ICO('or') },
+    { id:'def',    name:'Défense et mer', icon:ICO('chateau') }
+  ];
   const FORGE_UPGRADES = {
-    attaque: { id:'attaque', name:'Attaque', icon:ICO('epee'), unit:'de dégâts', levels:[ null,
+    // ---- Combat ----
+    attaque: { id:'attaque', branch:'combat', name:'Attaque', icon:ICO('epee'), levels:[ null,
       { age:2, name:'Lames aiguisées', cost:{or:150, pierre:60},   duration:15000, bonus:0.15, desc:'+15 % de dégâts' },
       { age:3, name:'Acier trempé',    cost:{or:400, pierre:180},  duration:25000, bonus:0.30, desc:'+30 % de dégâts' },
       { age:4, name:'Lames de maître', cost:{or:900, pierre:400},  duration:40000, bonus:0.50, desc:'+50 % de dégâts' } ] },
-    armure:  { id:'armure',  name:'Armure',  icon:ICO('armure'), unit:'de défense', levels:[ null,
-      { age:2, name:'Cuir renforcé',   cost:{or:120, bois:80},     duration:15000, bonus:2, desc:'+2 de défense' },
-      { age:3, name:'Cotte de mailles',cost:{or:350, pierre:150},  duration:25000, bonus:4, desc:'+4 de défense' },
-      { age:4, name:'Armure de plates',cost:{or:800, pierre:350},  duration:40000, bonus:7, desc:'+7 de défense' } ] },
-    recolte: { id:'recolte', name:'Récolte', icon:ICO('pioche'), unit:'de récolte', levels:[ null,
-      { age:2, name:'Outils en fer',   cost:{or:100, bois:100},    duration:15000, bonus:0.20, desc:'+20 % de vitesse de récolte' },
-      { age:3, name:"Haches d'acier",  cost:{or:300, bois:250},    duration:25000, bonus:0.40, desc:'+40 % de vitesse de récolte' },
-      { age:4, name:'Outils de maître',cost:{or:700, bois:500},    duration:40000, bonus:0.70, desc:'+70 % de vitesse de récolte' } ] }
+    cadence: { id:'cadence', branch:'combat', req:{attaque:1}, name:'Cadence', icon:ICO('arc'), levels:[ null,
+      { age:2, name:'Entraînement rapide', cost:{or:140, nourriture:80},   duration:15000, bonus:0.08, desc:'−8 % de délai entre deux attaques' },
+      { age:3, name:'Rythme de bataille',  cost:{or:380, nourriture:200},  duration:25000, bonus:0.16, desc:'−16 % de délai entre deux attaques' },
+      { age:4, name:'Fureur guerrière',    cost:{or:850, nourriture:420},  duration:40000, bonus:0.25, desc:'−25 % de délai entre deux attaques' } ] },
+    portee:  { id:'portee', branch:'combat', req:{attaque:2}, name:'Portée', icon:ICO('archer'), levels:[ null,
+      { age:2, name:'Arcs renforcés', cost:{bois:120, or:100},  duration:15000, bonus:0.5, desc:'+0,5 case de portée (archers)' },
+      { age:3, name:'Arcs longs',     cost:{bois:300, or:260},  duration:25000, bonus:1.0, desc:'+1 case de portée (archers)' },
+      { age:4, name:'Visée experte',  cost:{bois:650, or:600},  duration:40000, bonus:1.5, desc:'+1,5 case de portée (archers)' } ] },
+    armure:  { id:'armure', branch:'combat', name:'Armure', icon:ICO('armure'), levels:[ null,
+      { age:2, name:'Cuir renforcé',    cost:{or:120, bois:80},    duration:15000, bonus:2, desc:'+2 de défense' },
+      { age:3, name:'Cotte de mailles', cost:{or:350, pierre:150}, duration:25000, bonus:4, desc:'+4 de défense' },
+      { age:4, name:'Armure de plates', cost:{or:800, pierre:350}, duration:40000, bonus:7, desc:'+7 de défense' } ] },
+    vitalite:{ id:'vitalite', branch:'combat', req:{armure:1}, name:'Vitalité', icon:ICO('epeiste'), levels:[ null,
+      { age:2, name:'Rations de campagne', cost:{nourriture:150, or:80},   duration:15000, bonus:0.10, desc:'+10 % de points de vie' },
+      { age:3, name:'Entraînement rude',   cost:{nourriture:400, or:200},  duration:25000, bonus:0.20, desc:'+20 % de points de vie' },
+      { age:4, name:'Garde de fer',        cost:{nourriture:800, or:450},  duration:40000, bonus:0.35, desc:'+35 % de points de vie' } ] },
+    vitesse: { id:'vitesse', branch:'combat', req:{vitalite:1}, name:'Marche forcée', icon:ICO('deplacer'), levels:[ null,
+      { age:2, name:'Bottes ferrées',    cost:{nourriture:120, bois:100},  duration:15000, bonus:0.08, desc:'+8 % de vitesse de déplacement' },
+      { age:3, name:'Pas de course',     cost:{nourriture:320, bois:250},  duration:25000, bonus:0.16, desc:'+16 % de vitesse de déplacement' },
+      { age:4, name:'Marche légendaire', cost:{nourriture:700, bois:520},  duration:40000, bonus:0.25, desc:'+25 % de vitesse de déplacement' } ] },
+    // ---- Économie ----
+    recolte: { id:'recolte', branch:'eco', name:'Récolte', icon:ICO('pioche'), levels:[ null,
+      { age:2, name:'Outils en fer',    cost:{or:100, bois:100}, duration:15000, bonus:0.20, desc:'+20 % de vitesse de récolte' },
+      { age:3, name:"Haches d'acier",   cost:{or:300, bois:250}, duration:25000, bonus:0.40, desc:'+40 % de vitesse de récolte' },
+      { age:4, name:'Outils de maître', cost:{or:700, bois:500}, duration:40000, bonus:0.70, desc:'+70 % de vitesse de récolte' } ] },
+    batisseurs:{ id:'batisseurs', branch:'eco', req:{recolte:1}, name:'Bâtisseurs', icon:ICO('marteau'), levels:[ null,
+      { age:2, name:'Échafaudages',     cost:{bois:120, pierre:60},   duration:15000, bonus:0.20, desc:'−20 % de temps de construction' },
+      { age:3, name:'Maçons experts',   cost:{bois:300, pierre:200},  duration:25000, bonus:0.35, desc:'−35 % de temps de construction' },
+      { age:4, name:'Grands chantiers', cost:{bois:650, pierre:450},  duration:40000, bonus:0.50, desc:'−50 % de temps de construction' } ] },
+    recrutement:{ id:'recrutement', branch:'eco', req:{batisseurs:1}, name:'Recrutement', icon:ICO('recrue'), levels:[ null,
+      { age:2, name:'Appel aux armes',    cost:{nourriture:150, or:100},  duration:15000, bonus:0.10, desc:'−10 % de temps de formation' },
+      { age:3, name:'Camps d’entraînement', cost:{nourriture:420, or:280}, duration:25000, bonus:0.20, desc:'−20 % de temps de formation' },
+      { age:4, name:'Levée en masse',     cost:{nourriture:900, or:600},  duration:40000, bonus:0.30, desc:'−30 % de temps de formation' } ] },
+    forgeron:{ id:'forgeron', branch:'eco', req:{recrutement:1}, name:'Maître forgeron', icon:ICO('forge'), levels:[ null,
+      { age:2, name:'Soufflets',        cost:{or:200, pierre:120},   duration:15000, bonus:0.15, desc:'−15 % de durée des recherches de la forge' },
+      { age:3, name:'Enclume renforcée', cost:{or:500, pierre:320},  duration:25000, bonus:0.30, desc:'−30 % de durée des recherches de la forge' },
+      { age:4, name:'Atelier royal',    cost:{or:1100, pierre:700},  duration:40000, bonus:0.45, desc:'−45 % de durée des recherches de la forge' } ] },
+    // ---- Défense et mer ----
+    remparts:{ id:'remparts', branch:'def', req:{armure:1}, name:'Remparts', icon:ICO('mur'), levels:[ null,
+      { age:2, name:'Pierres de taille',   cost:{pierre:120, bois:80},   duration:15000, bonus:0.20, desc:'+20 % de points de vie des bâtiments' },
+      { age:3, name:'Murs épaissis',       cost:{pierre:320, bois:200},  duration:25000, bonus:0.40, desc:'+40 % de points de vie des bâtiments' },
+      { age:4, name:'Forteresse',          cost:{pierre:700, bois:450},  duration:40000, bonus:0.70, desc:'+70 % de points de vie des bâtiments' } ] },
+    tours:   { id:'tours', branch:'def', req:{remparts:1}, name:'Artillerie', icon:ICO('donjon'), levels:[ null,
+      { age:2, name:'Carreaux lourds',   cost:{pierre:150, or:120},  duration:15000, bonus:0.25, desc:'+25 % de dégâts des tours (château, donjon)' },
+      { age:3, name:'Balistes',          cost:{pierre:380, or:300},  duration:25000, bonus:0.50, desc:'+50 % de dégâts des tours (château, donjon)' },
+      { age:4, name:'Trébuchets',        cost:{pierre:800, or:650},  duration:40000, bonus:0.80, desc:'+80 % de dégâts des tours (château, donjon)' } ] },
+    greement:{ id:'greement', branch:'def', req:{remparts:1}, name:'Gréement', icon:ICO('bateau'), levels:[ null,
+      { age:2, name:'Voiles renforcées', cost:{bois:200, or:100},   duration:15000, bonus:0.10, desc:'+10 % de vitesse des navires' },
+      { age:3, name:'Coques fines',      cost:{bois:500, or:260},   duration:25000, bonus:0.20, desc:'+20 % de vitesse des navires' },
+      { age:4, name:'Vents du large',    cost:{bois:1000, or:560},  duration:40000, bonus:0.30, desc:'+30 % de vitesse des navires' } ] }
   };
-  let forgeLevels = { attaque:0, armure:0, recolte:0 };
+  let forgeLevels = Object.fromEntries(Object.keys(FORGE_UPGRADES).map(k => [k, 0]));
   let forgeResearch = null; // {key, level, start, duration} — une seule amélioration à la fois
-  function forgeBonus(key){ const l = forgeLevels[key]||0; return l ? FORGE_UPGRADES[key].levels[l].bonus : 0; }
-  const forgeAtkMult = ()=> 1 + forgeBonus('attaque');
-  const forgeDefBonus = ()=> forgeBonus('armure');
-  const gatherRate = ()=> GATHER_RATE * (1 + forgeBonus('recolte'));
+  function forgeBonus(key){ const l = forgeLevels[key]||0; const u = FORGE_UPGRADES[key]; return (l && u) ? u.levels[l].bonus : 0; }
+  const forgeAtkMult   = ()=> 1 + forgeBonus('attaque');
+  const forgeDefBonus  = ()=> forgeBonus('armure');
+  const gatherRate     = ()=> GATHER_RATE * (1 + forgeBonus('recolte'));
+  const forgeSpeedMult = ()=> 1 + forgeBonus('vitesse');       // vitesse des soldats
+  const forgeBuildMult = ()=> 1 - forgeBonus('batisseurs');    // durée de construction
+  const forgeTrainMult = ()=> 1 - forgeBonus('recrutement');   // durée de formation (villageois, troupes)
+  const forgeResMult   = ()=> 1 - forgeBonus('forgeron');      // durée des recherches de la forge
+  const forgeHpBuildMult = ()=> 1 + forgeBonus('remparts');    // PV des bâtiments du joueur
+  const forgeTowerMult = ()=> 1 + forgeBonus('tours');         // dégâts des tours du joueur
+  const forgeBoatMult  = ()=> 1 + forgeBonus('greement');      // vitesse des navires
+  const trainDur = (d)=> Math.round(d * forgeTrainMult());
+  // Caractéristiques d'un soldat du joueur selon son type, l'Âge et la forge
+  function forgeSoldierStats(kind, age){
+    const table = PLAYER_UNIT_LEVELS[kind] || PLAYER_UNIT_LEVELS.epeiste;
+    const lvl = table[age] || table[2];
+    return {
+      lvl,
+      hpMax: Math.round(lvl.hp * (1 + forgeBonus('vitalite'))),
+      dmg: Math.round(lvl.dmg * forgeAtkMult()),
+      def: lvl.def + forgeDefBonus(),
+      range: lvl.range + (lvl.range > 1.8 ? forgeBonus('portee') : 0),
+      cooldown: Math.max(200, Math.round(lvl.cooldown * (1 - forgeBonus('cadence'))))
+    };
+  }
 
   /* ================= STATE ================= */
   let stock = { bois: 60, or: 30, nourriture: 50, pierre: 40 };
@@ -2781,12 +2872,13 @@
     const spawnTileX = bx, spawnTileY = by + 1;
     const jitterX = (Math.random()-0.5)*TILE*0.7;
     const jitterY = (Math.random()-0.5)*TILE*0.5;
+    const fst = forgeSoldierStats(kind, table[currentAge] ? currentAge : 2);
     soldiers.push({
       id: Math.random().toString(36).slice(2,7),
       kind,
       name: lvl.name + ' ' + soldierCounter,
-      hp: lvl.hp, hpMax: lvl.hp,
-      dmg: Math.round(lvl.dmg * forgeAtkMult()), def: lvl.def + forgeDefBonus(), range: lvl.range, cooldown: lvl.cooldown,
+      hp: fst.hpMax, hpMax: fst.hpMax,
+      dmg: fst.dmg, def: fst.def, range: fst.range, cooldown: fst.cooldown,
       x: spawnTileX*TILE + TILE/2 + jitterX,
       y: spawnTileY*TILE + TILE/2 + jitterY,
       selected: false, moving: false, tx: null, ty: null,
@@ -3239,7 +3331,7 @@
       }
       if(!best) continue;
       b.lastAttack = now;
-      const dmg = Math.max(1, Math.round(stats.dmg - (best.def || 0) * 0.5));
+      const dmg = Math.max(1, Math.round(stats.dmg * forgeTowerMult() - (best.def || 0) * 0.5));
       best.hp -= dmg;
       combatTexts.push({ x:best.x, y:best.y, text:'-'+dmg, color:'#e8574a', start:now });
       projectiles.push({ x1:c.x, y1:c.y - c.r*0.6, x2:best.x, y2:best.y, start:now, duration:260 });
@@ -3798,7 +3890,7 @@
       if(s._delay > 0){ s._delay -= dt; continue; }
       if(s.moving){
         s._post = false;
-        const arrived = moveUnit(s, SOLDIER_SPEED, dt), wasStuck = s._stuck;
+        const arrived = moveUnit(s, SOLDIER_SPEED * forgeSpeedMult(), dt), wasStuck = s._stuck;
         if(arrived){
           s._stuck = false; s.moving = false; s._arrWait = 0;
           if(wasStuck && s.slotX !== undefined){ s.slotX = s.x; s.slotY = s.y; }   // place inaccessible : on garde l'endroit actuel
@@ -4227,8 +4319,8 @@
       for(let y=y0;y<y0+size;y++){
         for(let x=x0;x<x0+size;x++) map[y][x].occupied = true;
       }
-      buildings.push({x:x0, y:y0, w:size, h:size, type:b.id, built:false, buildStart:performance.now(), buildDuration:(gameMode === 'pvp' ? 1 : BUILD_TIME),
-        hp:buildingMaxHp(b.id), maxHp:buildingMaxHp(b.id)});
+      buildings.push({x:x0, y:y0, w:size, h:size, type:b.id, built:false, buildStart:performance.now(), buildDuration:(gameMode === 'pvp' ? 1 : Math.round(BUILD_TIME * forgeBuildMult())),
+        hp:Math.round(buildingMaxHp(b.id) * forgeHpBuildMult()), maxHp:Math.round(buildingMaxHp(b.id) * forgeHpBuildMult())});
       if(b.id === 'port') buildings[buildings.length - 1].dock = findDockTile(x0, y0, size);
       connectTileToMain(x0, y0);
       showToast(b.name + ' en construction...');
@@ -4421,18 +4513,23 @@
 
   function finishBoxSelect(e){
     const wrapRect = canvas.parentElement.getBoundingClientRect();
+    const cr = canvas.getBoundingClientRect();
+    const offX = cr.left - wrapRect.left, offY = cr.top - wrapRect.top;
     const x1 = e.clientX-wrapRect.left, y1 = e.clientY-wrapRect.top;
-    const bx0 = Math.min(boxSelectDrag.x0, x1), bx1 = Math.max(boxSelectDrag.x0, x1);
-    const by0 = Math.min(boxSelectDrag.y0, y1), by1 = Math.max(boxSelectDrag.y0, y1);
+    const sx0 = Math.min(boxSelectDrag.x0, x1), sx1 = Math.max(boxSelectDrag.x0, x1);
+    const sy0 = Math.min(boxSelectDrag.y0, y1), sy1 = Math.max(boxSelectDrag.y0, y1);
     selboxEl.style.display = 'none';
     boxSelectDrag = null;
     setBoxSelectMode(false);
     // un simple tap (boîte quasi nulle) : on ne sélectionne rien, pour ne pas gêner un clic raté
-    if(bx1-bx0 < 6 && by1-by0 < 6) return;
+    if(sx1-sx0 < 6 && sy1-sy0 < 6) return;
+    // La boîte est en pixels écran ; project() travaille « avant zoom » : on ramène donc les coins de la boîte
+    // dans ce repère (sinon, dézoomé ou zoomé, la zone sélectionnée ne correspondait plus à ce qu'on voit).
+    const a = toUnzoomed(sx0 - offX, sy0 - offY), b = toUnzoomed(sx1 - offX, sy1 - offY);
     const found = [];
     for(const s of soldiers){
-      const p = project(s.x/TILE, s.y/TILE);
-      if(p.x >= bx0 && p.x <= bx1 && p.y >= by0 && p.y <= by1) found.push(s);
+      const p = project(s.x/TILE, s.y/TILE), py = p.y - 14;   // centre du corps, comme pour le tap
+      if(p.x >= a.x && p.x <= b.x && py >= a.y && py <= b.y) found.push(s);
     }
     selectedBuilding = null;
     soldiers.forEach(s=> s.selected = found.includes(s));
@@ -4560,8 +4657,9 @@
       if(!lvl) return;
       const m = s.name.match(/(\d+)$/);
       s.name = lvl.name + (m ? ' '+m[1] : '');
-      s.hpMax = lvl.hp; s.hp = lvl.hp;
-      s.dmg = Math.round(lvl.dmg * forgeAtkMult()); s.def = lvl.def + forgeDefBonus(); s.range = lvl.range; s.cooldown = lvl.cooldown;
+      const fst = forgeSoldierStats(s.kind, currentAge);
+      s.hpMax = fst.hpMax; s.hp = fst.hpMax;
+      s.dmg = fst.dmg; s.def = fst.def; s.range = fst.range; s.cooldown = fst.cooldown;
     });
     enemyTroops.forEach(e=>{
       const table = ENEMY_UNIT_LEVELS[e.kind];
@@ -4609,32 +4707,51 @@
   document.getElementById('fm-close').addEventListener('click', closeForgeModal);
   forgeOverlay.addEventListener('click', (e)=>{ if(e.target === forgeOverlay) closeForgeModal(); });
 
-  function renderForgeModal(){
-    fmList.innerHTML = Object.values(FORGE_UPGRADES).map(up=>{
-      const lvl = forgeLevels[up.id] || 0;
-      const cur = lvl ? up.levels[lvl] : null;
-      const next = up.levels[lvl+1];
-      const busy = !!forgeResearch;
-      let detail, btn = '';
-      if(!next){
-        detail = `<div class="fm-max">✔ Niveau maximum</div>`;
+  function forgeReqOk(up){ return !up.req || Object.keys(up.req).every(k => (forgeLevels[k]||0) >= up.req[k]); }
+  function forgeReqText(up){
+    return Object.keys(up.req || {}).map(k => FORGE_UPGRADES[k].name + ' niv. ' + up.req[k]).join(' + ');
+  }
+  function forgeNodeHTML(up){
+    const lvl = forgeLevels[up.id] || 0, maxL = up.levels.length - 1;
+    const cur = lvl ? up.levels[lvl] : null, next = up.levels[lvl+1];
+    const busy = !!forgeResearch, isThis = busy && forgeResearch.key === up.id;
+    let pips = '';
+    for(let i = 1; i <= maxL; i++) pips += '<i class="' + (i <= lvl ? 'on' : '') + '"></i>';
+    let state = 'avail', info = '', btn = '';
+    if(!next){
+      state = 'max';
+      info = `<div class="fm-max">✔ Niveau maximum</div>`;
+    } else {
+      const desc = `<div class="fm-desc">Niv. ${lvl+1} · ${next.name} : ${next.desc}</div>`;
+      if(!forgeReqOk(up)){
+        state = 'locked';
+        info = desc + `<div class="fm-lock">${ICO('amelioration')} Requiert : ${forgeReqText(up)}</div>`;
       } else if(currentAge < next.age){
-        detail = `<div class="fm-desc">Niv. ${lvl+1} · ${next.name} : ${next.desc}</div><div class="fm-lock">${ICO('amelioration')} Débloqué à l'${AGES[next.age].name}</div>`;
+        state = 'locked';
+        info = desc + `<div class="fm-lock">${ICO('amelioration')} Débloqué à l'${AGES[next.age].name}</div>`;
       } else {
-        const isThis = forgeResearch && forgeResearch.key === up.id;
         const afford = canAfford(next.cost);
-        detail = `<div class="fm-desc">Niv. ${lvl+1} · ${next.name} : ${next.desc}</div><div class="cost">${fmtCost(next.cost)} · ${Math.round(next.duration/1000)}s</div>`;
+        info = desc + `<div class="cost">${fmtCost(next.cost)} · ${Math.round(next.duration * forgeResMult() / 1000)}s</div>`;
         btn = `<div class="cm-train-btn ${(afford && !busy) ? '' : 'disabled'}" data-up="${up.id}">${isThis ? 'En cours…' : 'Améliorer'}</div>`;
       }
-      return `<div class="cm-unit">
-        <div>
-          <div class="nm">${up.icon} ${up.name} · Niv. ${lvl}/3</div>
-          ${cur ? `<div class="fm-desc">Actuel : ${cur.desc}</div>` : ''}
-          ${detail}
-        </div>
-        ${btn}
-      </div>`;
-    }).join('');
+    }
+    return `<div class="ft-node ${state}${isThis ? ' busy' : ''}">
+      <div class="ft-head"><span class="ft-name">${up.icon} ${up.name}</span><span class="ft-pips">${pips}</span></div>
+      ${cur ? `<div class="fm-desc ft-cur">Actuel : ${cur.desc}</div>` : ''}
+      ${info}${btn}
+    </div>`;
+  }
+  // Une recherche et, en dessous (décalées), celles qu'elle débloque dans la même branche
+  function forgeTreeHTML(up){
+    const kids = Object.values(FORGE_UPGRADES).filter(u => u.branch === up.branch && u.req && Object.keys(u.req)[0] === up.id);
+    return '<div class="ft-item">' + forgeNodeHTML(up) + (kids.length ? '<div class="ft-children">' + kids.map(forgeTreeHTML).join('') + '</div>' : '') + '</div>';
+  }
+  function renderForgeModal(){
+    const all = Object.values(FORGE_UPGRADES);
+    fmList.innerHTML = '<div class="ft-tree">' + FORGE_BRANCHES.map(br => {
+      const roots = all.filter(u => u.branch === br.id && !(u.req && FORGE_UPGRADES[Object.keys(u.req)[0]].branch === br.id));
+      return '<div class="ft-col"><div class="ft-col-title">' + br.icon + ' ' + br.name + '</div>' + roots.map(forgeTreeHTML).join('') + '</div>';
+    }).join('') + '</div>';
     updateForgeBar(performance.now());
   }
   function updateForgeBar(now){
@@ -4653,22 +4770,39 @@
     if(forgeResearch){ showToast('Une amélioration est déjà en cours'); return; }
     const next = up.levels[(forgeLevels[up.id]||0) + 1];
     if(!next) return;
+    if(!forgeReqOk(up)){ showToast('Requiert : ' + forgeReqText(up)); return; }
     if(currentAge < next.age){ showToast('Débloqué à l\u2019' + AGES[next.age].name); return; }
     if(!canAfford(next.cost)){ showToast('Ressources insuffisantes'); return; }
     spend(next.cost);
-    forgeResearch = { key: up.id, level: (forgeLevels[up.id]||0) + 1, start: performance.now(), duration: next.duration };
+    forgeResearch = { key: up.id, level: (forgeLevels[up.id]||0) + 1, start: performance.now(), duration: Math.round(next.duration * forgeResMult()) };
     showToast(ICO('marteau')+' ' + next.name + ' : forge en cours...');
     renderForgeModal();
   });
-  // Met à jour les soldats existants avec les bonus de la forge (sans toucher à leurs PV)
+  // Met à jour les soldats existants avec les bonus de la forge (les PV actuels gardent leur proportion)
   function applyForgeToSoldiers(){
     soldiers.forEach(s=>{
       const table = PLAYER_UNIT_LEVELS[s.kind] || PLAYER_UNIT_LEVELS.epeiste;
-      const lvl = table[currentAge];
-      if(!lvl) return;
-      s.dmg = Math.round(lvl.dmg * forgeAtkMult());
-      s.def = lvl.def + forgeDefBonus();
+      if(!table[currentAge]) return;
+      const fst = forgeSoldierStats(s.kind, currentAge);
+      s.dmg = fst.dmg; s.def = fst.def; s.range = fst.range; s.cooldown = fst.cooldown;
+      if(fst.hpMax !== s.hpMax){
+        const ratio = s.hpMax ? s.hp / s.hpMax : 1;
+        s.hpMax = fst.hpMax; s.hp = Math.max(1, Math.round(fst.hpMax * ratio));
+      }
     });
+  }
+  // PV max des bâtiments du joueur (Remparts) ; scaleHp : les PV actuels suivent la même proportion
+  function applyForgeToBuildings(scaleHp){
+    const m = forgeHpBuildMult();
+    for(const b of buildings){
+      if(b.owner === 'ai' || b.type === 'academie') continue;
+      const nm = Math.round(buildingMaxHp(b.type) * m);
+      if(b.maxHp === nm) continue;
+      const ratio = b.maxHp ? (b.hp != null ? b.hp : b.maxHp) / b.maxHp : 1;
+      b.maxHp = nm;
+      if(scaleHp) b.hp = Math.min(nm, Math.max(1, Math.round(nm * ratio)));
+      else if(b.hp != null) b.hp = Math.min(b.hp, nm);
+    }
   }
   function updateForge(now){
     if(!forgeResearch) return;
@@ -4678,6 +4812,7 @@
       const name = up.levels[forgeResearch.level].name;
       forgeResearch = null;
       applyForgeToSoldiers();
+      applyForgeToBuildings(true);
       showToast(ICO('marteau')+' Amélioration terminée : ' + name);
       if(forgeOverlay.classList.contains('visible')) renderForgeModal();
     } else if(forgeOverlay.classList.contains('visible')){
@@ -4750,7 +4885,7 @@
     for(let i=0; i<target; i++){
       if(!canAfford(act.cost)) break;
       spend(act.cost);
-      trainingQueue.push({start: null, duration: act.duration});
+      trainingQueue.push({start: null, duration: trainDur(act.duration)});
       queued++;
     }
     if(queued <= 0) return;
@@ -4785,7 +4920,7 @@
       return `<div class="cm-unit">
         <div>
           <div class="nm">${u.icon} ${u.name}</div>
-          <div class="cost">${fmtCost(u.cost)} · ${gameMode === 'pvp' ? 'instantané' : Math.round(u.duration/1000)+'s'}</div>
+          <div class="cost">${fmtCost(u.cost)} · ${gameMode === 'pvp' ? 'instantané' : Math.round(trainDur(u.duration)/1000)+'s'}</div>
           ${pendingU>0 ? `<div class="cm-count">${pendingU} en formation</div>` : ''}
         </div>
         <div class="cm-qty-group">
@@ -4803,7 +4938,7 @@
     for(let i=0;i<qty;i++){
       if(!canAfford(u.cost)) break;
       spend(u.cost);
-      soldierTrainingQueue.push({start: null, duration: (gameMode === 'pvp' ? 0 : u.duration), x: activeCaserne.x, y: activeCaserne.y, unit: u.id});
+      soldierTrainingQueue.push({start: null, duration: (gameMode === 'pvp' ? 0 : trainDur(u.duration)), x: activeCaserne.x, y: activeCaserne.y, unit: u.id});
       queued++;
     }
     return queued;
@@ -4981,7 +5116,7 @@
   }
   function boatMove(b, dt){   // renvoie true quand le trajet est terminé
     if(!b.path || !b.path.length) return true;
-    const wp = b.path[0], dx = wp.x - b.x, dy = wp.y - b.y, d = Math.hypot(dx, dy), step = b.speed * dt;
+    const wp = b.path[0], dx = wp.x - b.x, dy = wp.y - b.y, d = Math.hypot(dx, dy), step = b.speed * forgeBoatMult() * dt;
     if(d <= step){ b.x = wp.x; b.y = wp.y; b.path.shift(); return b.path.length === 0; }
     b.x += dx / d * step; b.y += dy / d * step;
     setBoatDir(b, dx, dy);
@@ -5340,7 +5475,7 @@
       <div class="tp-row" data-unit="${u.id}">
         <div class="tp-top">
           <span class="tp-ic">${u.icon}</span>
-          <div><div class="tp-name">${u.name}</div><div class="tp-cost">${fmtCost(u.cost)} · ${gameMode === 'pvp' ? 'instantané' : Math.round(u.duration/1000) + ' s'} chacun</div></div>
+          <div><div class="tp-name">${u.name}</div><div class="tp-cost">${fmtCost(u.cost)} · ${gameMode === 'pvp' ? 'instantané' : Math.round(trainDur(u.duration)/1000) + ' s'} chacun</div></div>
         </div>
         <div class="tp-ctl">
           <button class="tp-step" type="button" data-d="-1">−</button>
@@ -5362,7 +5497,7 @@
     if(!sumEl || !go) return;
     const M = tpCasernes().length, units = tpUnits();
     let N = 0, time = 0;
-    for(const u of units){ const n = tpCount[u.id] || 0; N += n; if(M) time += Math.ceil(n / M) * (gameMode === 'pvp' ? 0 : u.duration); }
+    for(const u of units){ const n = tpCount[u.id] || 0; N += n; if(M) time += Math.ceil(n / M) * (gameMode === 'pvp' ? 0 : trainDur(u.duration)); }
     const cost = tpCostOf(tpCount), ok = canAfford(cost);
     let h = ICO('caserne')+' Casernes disponibles : <b>' + M + '</b>';
     if(!M) h += '<br><span class="bad">Construis une Caserne pour former des troupes.</span>';
@@ -5400,7 +5535,7 @@
         let bi = 0;
         for(let i = 1; i < cas.length; i++) if(loads[i] < loads[bi]) bi = i;
         spend(u.cost);
-        soldierTrainingQueue.push({start: null, duration: (gameMode === 'pvp' ? 0 : u.duration), x: cas[bi].x, y: cas[bi].y, key: keys[bi], unit: u.id});
+        soldierTrainingQueue.push({start: null, duration: (gameMode === 'pvp' ? 0 : trainDur(u.duration)), x: cas[bi].x, y: cas[bi].y, key: keys[bi], unit: u.id});
         loads[bi]++; per[bi]++; total++;
       }
     }
@@ -6819,10 +6954,11 @@
     cap = data.cap;
     currentAge = data.currentAge;
     if(data.forge){
-      forgeLevels = {attaque:0, armure:0, recolte:0, ...(data.forge.levels||{})};
+      forgeLevels = Object.assign(Object.fromEntries(Object.keys(FORGE_UPGRADES).map(k => [k, 0])), data.forge.levels || {});
       const fr = data.forge.research;
       forgeResearch = fr ? {key:fr.key, level:fr.level, duration:fr.duration, start: performance.now() - (fr.duration - fr.remaining)} : null;
     }
+    applyForgeToBuildings(false);
     villagerCounter = data.villagerCounter||0;
     soldierCounter = data.soldierCounter||0;
     gameStartAt = performance.now() - (data.elapsedMs||0);
@@ -7592,6 +7728,17 @@
 
   /* ================= CHANGELOG ================= */
   const CHANGELOG = [
+    {
+      version: 'v0.42',
+      title: 'Forge en arbre, sélection au zoom, écran adaptatif',
+      changes: [
+        "Sélection rectangulaire corrigée : la zone tient maintenant compte du zoom et du dézoom, elle sélectionne exactement les troupes qui se trouvent dans le rectangle dessiné",
+        "L'écran de jeu occupe toute la largeur disponible (fini les bandes sur les côtés)",
+        "Forge : nouvel arbre d'améliorations en 3 branches (Combat, Économie, Défense et mer), 12 recherches de 3 paliers, avec des prérequis",
+        "Nouvelles améliorations : Cadence, Portée, Vitalité, Marche forcée, Bâtisseurs, Recrutement, Maître forgeron, Remparts, Artillerie, Gréement",
+        "Menu principal sur deux colonnes sur grand écran ; Compte et Sauvegardes ouvrent chacun leur panneau avec un petit bouton"
+      ]
+    },
     {
       version: 'v0.41',
       title: 'Compte par adresse e-mail',
