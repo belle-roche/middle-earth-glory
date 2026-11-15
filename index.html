@@ -1590,6 +1590,14 @@
       y: cssH/2 + panOffsetY + (tx + ty) * (TILE_H/2)
     };
   }
+  // Les unités vivent en pixels « monde » : la case (x,y) occupe [x*TILE, (x+1)*TILE[ (floor), alors que le losange dessiné
+  // de cette case est centré sur project(x,y). Un point du monde se projette donc avec un décalage d'une demi-case,
+  // sinon la case « logique » (eau, forêt, collisions) était décalée d'une demi-case par rapport au sol dessiné.
+  function projectW(wx, wy){ return project(wx/TILE - 0.5, wy/TILE - 0.5); }
+  function screenToWorld(px, py){
+    const o = getOrigin(), sx = px - o.x, sy = py - o.y;
+    return { x: ((sx/TILE_W + sy/TILE_H) + 0.5) * TILE, y: ((sy/TILE_H - sx/TILE_W) + 0.5) * TILE };
+  }
   // Inverse of project(): screen point (relative to canvas) -> nearest tile (tx,ty)
   function unproject(px, py){
     const o = getOrigin();
@@ -2118,7 +2126,7 @@
       let any = false;
       for(const sl of fp.slots){
         if(sl.ok !== ok) continue;
-        const p = project(sl.x/TILE, sl.y/TILE);
+        const p = projectW(sl.x, sl.y);
         if(p.x < vb0.x - 20 || p.x > vb1.x + 20 || p.y < vb0.y - 20 || p.y > vb1.y + 20) continue;
         ctx.moveTo(p.x + 7, p.y); ctx.ellipse(p.x, p.y, 7, 3.6, 0, 0, Math.PI*2);
         any = true;
@@ -2129,8 +2137,8 @@
       ctx.lineWidth = 1.5; ctx.fill(); ctx.stroke();
     }
     // flèche : sens de marche (avant de la formation) et poignée de déplacement au centre
-    const cp = project(fp.cx/TILE, fp.cy/TILE);
-    const tip = project((fp.cx + Math.cos(fp.angle)*fp.reach)/TILE, (fp.cy + Math.sin(fp.angle)*fp.reach)/TILE);
+    const cp = projectW(fp.cx, fp.cy);
+    const tip = projectW(fp.cx + Math.cos(fp.angle)*fp.reach, fp.cy + Math.sin(fp.angle)*fp.reach);
     const dx = tip.x - cp.x, dy = tip.y - cp.y, dl = Math.hypot(dx, dy) || 1, ux = dx/dl, uy = dy/dl;
     ctx.strokeStyle = 'rgba(255,255,255,.9)'; ctx.fillStyle = 'rgba(255,255,255,.9)'; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(cp.x, cp.y); ctx.lineTo(tip.x, tip.y); ctx.stroke();
@@ -2194,6 +2202,54 @@
             if(pu === pv){ nudgeUnit(u, -nx, -ny); nudgeUnit(v, nx, ny); }
             else if(pu) nudgeUnit(v, nx*2, ny*2);      // u est posée à sa place : v s'écarte deux fois plus
             else nudgeUnit(u, -nx*2, -ny*2);
+          }
+        }
+      }
+    }
+  }
+
+  // Les villageois n'étaient repoussés par personne : ils se superposaient entre eux et avec les troupes.
+  // Ici ils s'écartent les uns des autres (poussée partagée) et cèdent la place aux soldats (qui, eux, ne bougent pas).
+  let vsHead = new Int32Array(0), vsNext = new Int32Array(0);
+  const vsList = [];
+  function separateVillagers(dt){
+    const V = villagers.length;
+    if(!V) return;
+    vsList.length = 0;
+    for(let i = 0; i < V; i++) vsList.push(villagers[i]);
+    for(let i = 0; i < soldiers.length; i++) vsList.push(soldiers[i]);
+    const n = vsList.length, CELL = 30, VV = 22, VS = 26;
+    const W = Math.ceil(MAP_W * TILE / CELL) + 3, H = Math.ceil(MAP_H * TILE / CELL) + 3, size = W * H;
+    if(vsHead.length < size) vsHead = new Int32Array(size);
+    if(vsNext.length < n) vsNext = new Int32Array(n * 2);
+    const head = vsHead, next = vsNext;
+    head.fill(-1, 0, size);
+    const cellOf = (u)=> {
+      let cx = Math.floor(u.x / CELL), cy = Math.floor(u.y / CELL);
+      cx = cx < 0 ? 0 : (cx >= W ? W - 1 : cx); cy = cy < 0 ? 0 : (cy >= H ? H - 1 : cy);
+      return cy * W + cx;
+    };
+    for(let i = 0; i < n; i++){ const c = cellOf(vsList[i]); next[i] = head[c]; head[c] = i; }
+    const maxPush = 90 * dt;
+    for(let i = 0; i < V; i++){
+      const u = vsList[i];
+      const c = cellOf(u), cx = c % W, cy = (c / W) | 0;
+      for(let gy = Math.max(0, cy - 1); gy <= Math.min(H - 1, cy + 1); gy++){
+        for(let gx = Math.max(0, cx - 1); gx <= Math.min(W - 1, cx + 1); gx++){
+          for(let j = head[gy * W + gx]; j !== -1; j = next[j]){
+            if(j === i) continue;
+            const isV = j < V;
+            if(isV && j < i) continue;                       // chaque paire de villageois n'est traitée qu'une fois
+            const o = vsList[j], minD = isV ? VV : VS;
+            let dx = o.x - u.x, dy = o.y - u.y;
+            if(dx > minD || dx < -minD || dy > minD || dy < -minD) continue;
+            let d = Math.sqrt(dx*dx + dy*dy);
+            if(d >= minD) continue;
+            if(d < 0.01){ const a = Math.random() * Math.PI * 2; dx = Math.cos(a); dy = Math.sin(a); d = 1; }
+            const push = Math.min((minD - d) * (isV ? 0.5 : 0.8), maxPush);
+            const nx = dx / d * push, ny = dy / d * push;
+            if(isV){ nudgeUnit(u, -nx, -ny); nudgeUnit(o, nx, ny); }
+            else nudgeUnit(u, -nx, -ny);                     // le villageois cède la place à la troupe
           }
         }
       }
@@ -2457,6 +2513,7 @@
     carveToMain(label, comp, main);
     purgeClearedResources();
     relabelWalk();
+    computeFordIds();   // vide aussi le cache du sol (les gués apparaissent tout de suite) et recalcule la grille des navires
   }
 
   // Nettoyage : retire les dalles isolées qui dépassent du gué (1 seul voisin), sauf si elles sont indispensables
@@ -4279,7 +4336,7 @@
     // débarquement : le prochain tap sur la terre ferme place (ou déplace) l'aperçu de formation
     if(fmtBoatPending || (fmtPreview && fmtPreview.boat)){
       const o0 = getOrigin(), sx0 = px - o0.x, sy0 = py - o0.y;
-      const wx0 = (sx0/TILE_W + sy0/TILE_H) * TILE, wy0 = (sy0/TILE_H - sx0/TILE_W) * TILE;
+      const wx0 = ((sx0/TILE_W + sy0/TILE_H) + 0.5) * TILE, wy0 = ((sy0/TILE_H - sx0/TILE_W) + 0.5) * TILE;
       if(!isWalkablePx(wx0, wy0)){ showToast('Choisis un point sur la terre ferme'); return; }
       const bt = fmtBoatPending || fmtPreview.boat;
       fmtBoatPending = null;
@@ -4331,7 +4388,7 @@
 
     // tap sur un bateau : avec des troupes sélectionnées on embarque, sinon on ouvre le panneau du bateau
     for(const bt of boats){
-      const p = project(bt.x/TILE, bt.y/TILE);
+      const p = projectW(bt.x, bt.y);
       if(Math.hypot(px - p.x, py - (p.y - 16)) < 36){
         const selB = soldiers.filter(s => s.selected);
         if(selB.length && bt.state === 'docked' && portOf(bt.portKey)){ boardOrder(selB, portOf(bt.portKey)); return; }
@@ -4344,7 +4401,7 @@
     if(groupSelect && !soldiers.some(s=>s.selected)) groupSelect = false; // groupe décimé
     let hitSoldier = null;
     for(const s of (groupSelect ? [] : soldiers)){
-      const p = project(s.x/TILE, s.y/TILE);
+      const p = projectW(s.x, s.y);
       if(Math.hypot(px-p.x, py-(p.y-14)) < 24){ hitSoldier = s; break; }
     }
     if(hitSoldier){
@@ -4368,8 +4425,8 @@
       }
       const o = getOrigin();
       const sx = px - o.x, sy = py - o.y;
-      const wx = (sx/TILE_W + sy/TILE_H) * TILE;
-      const wy = (sy/TILE_H - sx/TILE_W) * TILE;
+      const wx = ((sx/TILE_W + sy/TILE_H) + 0.5) * TILE;
+      const wy = ((sy/TILE_H - sx/TILE_W) + 0.5) * TILE;
       const dest = snapToWalkable(wx, wy);
       // Formation en ligne / carré / rond / rectangle : on montre d'abord un aperçu (à déplacer, tourner, valider)
       if(selectedSoldiers.length > 1 && formationShape !== 'auto'){
@@ -4446,7 +4503,7 @@
     if(fmtPreview && activePointers.size === 1){
       const r = canvas.getBoundingClientRect();
       const q = toUnzoomed(e.clientX - r.left, e.clientY - r.top);
-      const cp = project(fmtPreview.cx/TILE, fmtPreview.cy/TILE);
+      const cp = projectW(fmtPreview.cx, fmtPreview.cy);
       if(Math.hypot(q.x - cp.x, q.y - cp.y) < 34){ fmtDrag = {id:e.pointerId}; tapCandidate = null; return; }
     }
     if(activePointers.size === 1){
@@ -4473,8 +4530,8 @@
       const r = canvas.getBoundingClientRect();
       const q = toUnzoomed(e.clientX - r.left, e.clientY - r.top);
       const o = getOrigin(), sx = q.x - o.x, sy = q.y - o.y;
-      fmtPreview.cx = Math.max(TILE, Math.min(MAP_W*TILE - TILE, (sx/TILE_W + sy/TILE_H) * TILE));
-      fmtPreview.cy = Math.max(TILE, Math.min(MAP_H*TILE - TILE, (sy/TILE_H - sx/TILE_W) * TILE));
+      fmtPreview.cx = Math.max(TILE, Math.min(MAP_W*TILE - TILE, ((sx/TILE_W + sy/TILE_H) + 0.5) * TILE));
+      fmtPreview.cy = Math.max(TILE, Math.min(MAP_H*TILE - TILE, ((sy/TILE_H - sx/TILE_W) + 0.5) * TILE));
       fmtRefreshSlots();
       return;
     }
@@ -4528,7 +4585,7 @@
     const a = toUnzoomed(sx0 - offX, sy0 - offY), b = toUnzoomed(sx1 - offX, sy1 - offY);
     const found = [];
     for(const s of soldiers){
-      const p = project(s.x/TILE, s.y/TILE), py = p.y - 14;   // centre du corps, comme pour le tap
+      const p = projectW(s.x, s.y), py = p.y - 14;   // centre du corps, comme pour le tap
       if(p.x >= a.x && p.x <= b.x && py >= a.y && py <= b.y) found.push(s);
     }
     selectedBuilding = null;
@@ -6074,7 +6131,7 @@
       drawList.push({
         depth: vtx + vty + 0.6,
         draw: ()=>{
-          const p = project(vtx, vty);
+          const p = project(vtx - 0.5, vty - 0.5);
           drawVillager(v, p.x, p.y);
         }
       });
@@ -6104,14 +6161,14 @@
       const stx = s.x/TILE, sty = s.y/TILE;
       if(!onScreenTile(stx,sty)) continue;
       if(fastTroops){
-        const p = project(stx, sty), arch = s.kind === 'archer';
+        const p = project(stx - 0.5, sty - 0.5), arch = s.kind === 'archer';
         drawList.push({depth: stx + sty + 0.6, u: s, sx: p.x, sy: p.y, st: arch ? stripArc : stripWar, fr: arch ? frArc : frWar, sel: s.selected, enemy: false});
         continue;
       }
       drawList.push({
         depth: stx + sty + 0.6,
         draw: ()=>{
-          const p = project(stx, sty);
+          const p = project(stx - 0.5, sty - 0.5);
           drawSoldier(s, p.x, p.y);
         }
       });
@@ -6122,14 +6179,14 @@
       const etx = e.x/TILE, ety = e.y/TILE;
       if(!onScreenTile(etx,ety)) continue;
       if(fastTroops){
-        const p = project(etx, ety), arch = e.kind === 'archer';
+        const p = project(etx - 0.5, ety - 0.5), arch = e.kind === 'archer';
         drawList.push({depth: etx + ety + 0.6, u: e, sx: p.x, sy: p.y, st: arch ? stripEA : stripEW, fr: arch ? frArc : frWar, sel: false, enemy: true});
         continue;
       }
       drawList.push({
         depth: etx + ety + 0.6,
         draw: ()=>{
-          const p = project(etx, ety);
+          const p = project(etx - 0.5, ety - 0.5);
           drawEnemyTroop(e, p.x, p.y);
         }
       });
@@ -6138,7 +6195,7 @@
     for(const bt of boats){
       const btx = bt.x/TILE, bty = bt.y/TILE;
       if(!onScreenTile(btx, bty)) continue;
-      const p = project(btx, bty);
+      const p = project(btx - 0.5, bty - 0.5);
       drawList.push({depth: btx + bty + 0.4, boat: bt, px: p.x, py: p.y});
     }
     const ps0 = performance.now();
@@ -6155,8 +6212,8 @@
     const pfx0 = nowFx;
     for(const pr of projectiles){
       const t = Math.min(1, (nowFx - pr.start) / pr.duration);
-      const p1 = project(pr.x1/TILE, pr.y1/TILE);
-      const p2 = project(pr.x2/TILE, pr.y2/TILE);
+      const p1 = projectW(pr.x1, pr.y1);
+      const p2 = projectW(pr.x2, pr.y2);
       const x = p1.x + (p2.x-p1.x)*t, y = p1.y + (p2.y-p1.y)*t - 16 - Math.sin(t*Math.PI)*10;
       ctx.save();
       ctx.fillStyle = '#e8d8a0';
@@ -6166,7 +6223,7 @@
     // effets de combat : nombres de dégâts flottants
     for(const t of combatTexts){
       const age = (nowFx - t.start) / 800;
-      const p = project(t.x/TILE, t.y/TILE);
+      const p = projectW(t.x, t.y);
       ctx.save();
       ctx.globalAlpha = Math.max(0, 1-age);
       ctx.fillStyle = t.color;
@@ -6628,7 +6685,7 @@
     for(const e of active){ cx += e.x; cy += e.y; }
     cx /= active.length; cy /= active.length;
     panOffsetX = -(cx/TILE - cy/TILE) * (TILE_W/2);
-    panOffsetY = -(cx/TILE + cy/TILE) * (TILE_H/2);
+    panOffsetY = -(cx/TILE + cy/TILE - 1) * (TILE_H/2);
     clampPan();
   });
 
@@ -6744,6 +6801,7 @@
       separateUnits(soldiers, 30, dt);
       separateUnits(enemyTroops, 30, dt);
     }
+    separateVillagers(dt);
     const pf3 = performance.now();
     if(walkLabelDirty && now - lastRelabel > 6000){ relabelWalk(); lastRelabel = now; }
     updateBuildings(now);
@@ -7728,6 +7786,15 @@
 
   /* ================= CHANGELOG ================= */
   const CHANGELOG = [
+    {
+      version: 'v0.43',
+      title: 'Sol, cases et collisions',
+      changes: [
+        "Les cases « logiques » (eau, forêt, collisions) étaient décalées d'une demi-case par rapport au sol dessiné : les troupes et villageois s'arrêtaient trop tôt ou marchaient sur l'eau et les arbres. Elles sont maintenant alignées sur les cases affichées",
+        "Gués : quand un bâtiment posé dans une poche isolée ouvre un passage, le sol dessiné se met à jour tout de suite (avant, il fallait zoomer ou dézoomer pour voir le gué)",
+        "Collisions : les villageois ne se superposent plus entre eux et s'écartent devant les troupes"
+      ]
+    },
     {
       version: 'v0.42',
       title: 'Forge en arbre, sélection au zoom, écran adaptatif',
