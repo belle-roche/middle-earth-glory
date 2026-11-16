@@ -882,6 +882,12 @@
   .vp-bulk-ic .ico{ width:20px; height:20px; vertical-align:middle; }
   #villagers-btn .ico, #troops-btn .ico{ width:22px; height:22px; vertical-align:middle; }
   .ob-btn .ico{ width:18px; height:18px; vertical-align:middle; }
+  @media (max-width:700px){
+    #order-bar{ left:58px; right:8px; bottom:118px; flex-wrap:wrap; gap:6px; }
+  }
+  #sel-filter .ob-btn{ width:auto; min-width:42px; padding:0 8px; gap:4px; display:flex; align-items:center; justify-content:center; }
+  .ob-n{ font-size:10px; font-weight:700; font-variant-numeric:tabular-nums; color:var(--parchment-dim); }
+  .ob-btn.active .ob-n{ color:var(--gold); }
 
   /* ---- Menu principal : deux colonnes sur grand écran, compte / sauvegardes en petits boutons ---- */
   #menu-cloud-row{ display:flex; gap:8px; margin-top:14px; justify-content:center; }
@@ -1116,6 +1122,11 @@
       <button type="button" id="apb-confirm">Fonder ici</button>
     </div>
     <div id="order-bar">
+      <div class="ob-group" id="sel-filter" style="display:none;">
+        <button type="button" class="ob-btn" data-selfilter="epeiste" title="Ne garder que les chevaliers de la sélection"><svg class="ico" aria-hidden="true"><use href="#i-epeiste"/></svg><span class="ob-n">0</span></button>
+        <button type="button" class="ob-btn" data-selfilter="archer" title="Ne garder que les archers de la sélection"><svg class="ico" aria-hidden="true"><use href="#i-arc"/></svg><span class="ob-n">0</span></button>
+        <button type="button" class="ob-btn" data-selfilter="all" title="Toute la sélection (chevaliers et archers)"><svg class="ico" aria-hidden="true"><use href="#i-epees"/></svg><span class="ob-n">0</span></button>
+      </div>
       <div class="ob-group">
         <button type="button" class="ob-btn" id="stance-hold-btn" title="Tenir position : n'engage que ce qui est à portée, ne poursuit pas"><svg class="ico" aria-hidden="true"><use href="#i-armure"/></svg></button>
         <button type="button" class="ob-btn active" id="stance-follow-btn" title="Suivre : poursuit les ennemis proches avant de revenir"><svg class="ico" aria-hidden="true"><use href="#i-deplacer"/></svg></button>
@@ -1966,7 +1977,7 @@
                 : formationSlots(list.length);
     const sorted = list.slice().sort((a, b) => Math.hypot(a.x - cx, a.y - cy) - Math.hypot(b.x - cx, b.y - cy));
     sorted.forEach((u, i)=>{
-      const p = snapToWalkable(cx + slots[i].wx, cy + slots[i].wy);
+      const p = snapToWalkable(cx + slots[i].wx, cy + slots[i].wy, true);
       u.tx = p.x; u.ty = p.y; u.slotX = p.x; u.slotY = p.y; u.moving = true;
     });
   }
@@ -2029,7 +2040,7 @@
     const rowsMap = new Map();
     for(const sl of slots){ let a = rowsMap.get(sl.row); if(!a){ a = []; rowsMap.set(sl.row, a); } a.push(sl); }
     const rowIdx = [...rowsMap.keys()].sort((a, b) => a - b);
-    const place = (u, sl)=>{ const p = snapToWalkable(sl.x, sl.y); u.tx = p.x; u.ty = p.y; u.slotX = p.x; u.slotY = p.y; u.moving = true; };
+    const place = (u, sl)=>{ const p = snapToWalkable(sl.x, sl.y, true); u.tx = p.x; u.ty = p.y; u.slotX = p.x; u.slotY = p.y; u.moving = true; };
     const units = shape === 'rond'
       ? list.slice().sort((a, b) => Math.hypot(a.x-cx, a.y-cy) - Math.hypot(b.x-cx, b.y-cy))
       : list.slice().sort((a, b) => fwd(b) - fwd(a));
@@ -2061,7 +2072,7 @@
     let half = 0;
     fp.slots = ws.map(sl => {
       if(Math.abs(sl.v) > half) half = Math.abs(sl.v);
-      return {x: sl.x, y: sl.y, ok: sl.x > 0 && sl.y > 0 && sl.x < MAP_W*TILE && sl.y < MAP_H*TILE && isWalkablePx(sl.x, sl.y)};
+      return {x: sl.x, y: sl.y, ok: sl.x > 0 && sl.y > 0 && sl.x < MAP_W*TILE && sl.y < MAP_H*TILE && isWalkableOwn(sl.x, sl.y)};
     });
     fp.reach = half + 52;
   }
@@ -2208,6 +2219,67 @@
     }
   }
 
+  // Troupes au repos qui se chevauchent : elles s'écartent doucement, sans jamais pousser une troupe en marche ni celle qui tient
+  // sa place, et seulement vers une case libre (pas d'eau, d'arbre ou de mur). La nouvelle position devient leur place : plus d'aller-retour.
+  let stHead = new Int32Array(0), stNext = new Int32Array(0);
+  const stList = [];
+  function standClear(x, y){
+    return isWalkablePx(x, y) && isWalkablePx(x - 5, y) && isWalkablePx(x + 5, y) && isWalkablePx(x, y - 5) && isWalkablePx(x, y + 5);
+  }
+  function settleStep(u, dx, dy){
+    const nx = u.x + dx, ny = u.y + dy;
+    if(!standClear(nx, ny)) return;
+    u.x = nx; u.y = ny;
+    if(u.slotX !== undefined){ u.slotX = nx; u.slotY = ny; }
+  }
+  function settleIdleSoldiers(dt, phase, phases){
+    stList.length = 0;
+    for(let i = 0; i < soldiers.length; i++){ const s = soldiers[i]; if(!s.moving && !(s._delay > 0)) stList.push(s); }
+    const n = stList.length;
+    if(n < 2) return;
+    const minD = 24, CELL = 30;
+    const W = Math.ceil(MAP_W * TILE / CELL) + 3, H = Math.ceil(MAP_H * TILE / CELL) + 3, size = W * H;
+    if(stHead.length < size) stHead = new Int32Array(size);
+    if(stNext.length < n) stNext = new Int32Array(n * 2);
+    const head = stHead, next = stNext;
+    head.fill(-1, 0, size);
+    const cellOf = (u)=> {
+      let cx = Math.floor(u.x / CELL), cy = Math.floor(u.y / CELL);
+      cx = cx < 0 ? 0 : (cx >= W ? W - 1 : cx); cy = cy < 0 ? 0 : (cy >= H ? H - 1 : cy);
+      return cy * W + cx;
+    };
+    for(let i = 0; i < n; i++){ const c = cellOf(stList[i]); next[i] = head[c]; head[c] = i; }
+    const maxPush = 40 * dt;
+    if(wallsDirty) rebuildWallGrid();
+    solidWalls = true;
+    try{
+      for(let i = phase; i < n; i += phases){
+        const u = stList[i];
+        const c = cellOf(u), cx = c % W, cy = (c / W) | 0;
+        for(let gy = Math.max(0, cy - 1); gy <= Math.min(H - 1, cy + 1); gy++){
+          for(let gx = Math.max(0, cx - 1); gx <= Math.min(W - 1, cx + 1); gx++){
+            for(let j = head[gy * W + gx]; j !== -1; j = next[j]){
+              if(j <= i) continue;
+              const v = stList[j];
+              let dx = v.x - u.x, dy = v.y - u.y;
+              if(dx > minD || dx < -minD || dy > minD || dy < -minD) continue;
+              let d = Math.sqrt(dx*dx + dy*dy);
+              if(d >= minD) continue;
+              const pu = u._post === true, pv = v._post === true;
+              if(pu && pv) continue;                                   // chacune à sa place : on n'y touche pas
+              if(d < 0.01){ const a = ((u.x * 7 + u.y * 13 + j) % 360) * Math.PI / 180; dx = Math.cos(a); dy = Math.sin(a); d = 1; }
+              const push = Math.min((minD - d) * 0.5, maxPush);
+              const nx = dx / d * push, ny = dy / d * push;
+              if(pu) settleStep(v, nx*2, ny*2);
+              else if(pv) settleStep(u, -nx*2, -ny*2);
+              else { settleStep(u, -nx, -ny); settleStep(v, nx, ny); }
+            }
+          }
+        }
+      }
+    } finally { solidWalls = false; }
+  }
+
   // Les villageois n'étaient repoussés par personne : ils se superposaient entre eux et avec les troupes.
   // Ici ils s'écartent les uns des autres (poussée partagée) et cèdent la place aux soldats (qui, eux, ne bougent pas).
   let vsHead = new Int32Array(0), vsNext = new Int32Array(0);
@@ -2231,6 +2303,9 @@
     };
     for(let i = 0; i < n; i++){ const c = cellOf(vsList[i]); next[i] = head[c]; head[c] = i; }
     const maxPush = 90 * dt;
+    if(wallsDirty) rebuildWallGrid();
+    solidWalls = true;
+    try{
     for(let i = 0; i < V; i++){
       const u = vsList[i];
       const c = cellOf(u), cx = c % W, cy = (c / W) | 0;
@@ -2254,6 +2329,7 @@
         }
       }
     }
+    } finally { solidWalls = false; }
   }
 
   // Anciennes sauvegardes : complète le nombre de camps (20 camps + 2 grands camps) avec leurs troupes
@@ -2336,8 +2412,29 @@
       }
     }
   }
+  // Murs du joueur : infranchissables pour SES unités (solidWalls actif pendant leurs déplacements) ; les portes restent ouvertes.
+  const wallGrid = new Uint8Array(MAP_W * MAP_H);
+  let solidWalls = false, wallsDirty = true, wallCount = 0;
+  function rebuildWallGrid(){
+    wallGrid.fill(0); wallCount = 0;
+    for(const b of buildings){
+      if(b.type !== 'mur' || b.owner === 'ai') continue;
+      for(let y = b.y; y < b.y + (b.h||1); y++) for(let x = b.x; x < b.x + (b.w||1); x++) if(x >= 0 && y >= 0 && x < MAP_W && y < MAP_H){ wallGrid[y*MAP_W + x] = 1; wallCount++; }
+    }
+    wallsDirty = false;
+    pathCacheAt = 0; failGoal.clear();   // les trajets mémorisés ne connaissent pas ces murs
+  }
   function isWalkableTile(x, y){
-    return x >= 0 && y >= 0 && x < MAP_W && y < MAP_H && walkGrid[y*MAP_W + x] === 1;
+    if(x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) return false;
+    const i = y*MAP_W + x;
+    return walkGrid[i] === 1 && !(solidWalls && wallGrid[i] === 1);
+  }
+  function isWalkableOwn(px, py){
+    if(wallsDirty) rebuildWallGrid();
+    solidWalls = true;
+    const r = isWalkablePx(px, py);
+    solidWalls = false;
+    return r;
   }
   function isWalkablePx(px, py){ return isWalkableTile(Math.floor(px / TILE), Math.floor(py / TILE)); }
 
@@ -2511,6 +2608,7 @@
       if(!comp || comp === main) return;
     }
     carveToMain(label, comp, main);
+    bakeFords();
     purgeClearedResources();
     relabelWalk();
     computeFordIds();   // vide aussi le cache du sol (les gués apparaissent tout de suite) et recalcule la grille des navires
@@ -2550,6 +2648,33 @@
     }
   }
 
+  // Gués = ponts en cases normales : les sommets de la rivière sous un gué passent à « terre ». Les cases du gué deviennent de l'herbe
+  // ordinaire et celles qui les bordent prennent automatiquement leur bord de berge (mêmes tuiles que le reste de la carte).
+  function bakeFords(){
+    let any = false;
+    for(let y = 0; y < MAP_H; y++) for(let x = 0; x < MAP_W; x++){
+      if(!map[y][x].ford) continue;
+      any = true;
+      riverVerts[y*RV_W + x] = 0; riverVerts[y*RV_W + x + 1] = 0;
+      riverVerts[(y+1)*RV_W + x] = 0; riverVerts[(y+1)*RV_W + x + 1] = 0;
+    }
+    if(!any) return;
+    const seen = new Uint8Array(MAP_W * MAP_H);
+    for(let y = 0; y < MAP_H; y++) for(let x = 0; x < MAP_W; x++){
+      if(!map[y][x].ford) continue;
+      for(let dy = -1; dy <= 1; dy++) for(let dx = -1; dx <= 1; dx++){
+        const nx = x + dx, ny = y + dy;
+        if(nx < 0 || ny < 0 || nx >= MAP_W || ny >= MAP_H || seen[ny*MAP_W + nx]) continue;
+        seen[ny*MAP_W + nx] = 1;
+        const t = map[ny][nx];
+        const mask = riverVerts[ny*RV_W + nx] | (riverVerts[ny*RV_W + nx + 1] << 1) |
+                     (riverVerts[(ny+1)*RV_W + nx + 1] << 2) | (riverVerts[(ny+1)*RV_W + nx] << 3);
+        if(mask !== t.rv){ t.rv = mask; refreshWalkTile(nx, ny); }
+      }
+    }
+    groundChunkReset(); boatGridDirty = true;
+  }
+
   // Gués aléatoires en plus, puis on garantit que toute la terre reste accessible
   function generateFords(bx, by){
     for(let y = 0; y < MAP_H; y++) for(let x = 0; x < MAP_W; x++) map[y][x].ford = false;
@@ -2568,6 +2693,7 @@
       }
     }
     pruneFords();
+    bakeFords();
     computeFordIds();
   }
   function encodeFords(){
@@ -2583,6 +2709,7 @@
     }
     rebuildWalkGrid();
     pruneFords();
+    bakeFords();
     computeFordIds();
   }
 
@@ -2751,6 +2878,7 @@
   // « famille » de graine, à condition de pouvoir rejoindre son 1er point et de pouvoir finir en ligne droite.
   // Un groupe entier ne déclenche ainsi que quelques A* au lieu d'un par troupe. Cache valable 3 s.
   let pathCache = new Map(), pathCacheAt = 0;
+  const failGoal = new Map();   // case-but -> heure du dernier échec de recherche
   let astarSpent = 0;
   const PLAN_DEFER = {defer: true};
   function smoothTilePath(path, x0, y0){
@@ -2771,7 +2899,7 @@
     const sx = Math.floor(x0 / TILE), sy = Math.floor(y0 / TILE), gx = Math.floor(x1 / TILE), gy = Math.floor(y1 / TILE);
     const now = performance.now();
     if(now - pathCacheAt > 3000){ pathCache.clear(); pathCacheAt = now; }
-    const ck = (gx >> 3) + ',' + (gy >> 3) + ',' + (seed ? seed % 3 : 0);
+    const ck = (gx >> 3) + ',' + (gy >> 3) + ',' + (seed ? seed % 3 : 0) + (solidWalls ? 'w' : '');
     let list = pathCache.get(ck);
     if(list){
       for(let i = 0; i < list.length; i++){
@@ -2783,11 +2911,20 @@
         }
       }
     }
+    // But déjà reconnu inaccessible il y a peu (même case) : inutile de relancer une recherche coûteuse
+    const fk = gy*MAP_W + gx + (solidWalls ? 'w' : '');
+    const ft = failGoal.get(fk);
+    if(ft && now - ft < 1500) return null;
     // Budget : au plus ~6 ms de recherche de chemin par image ; les troupes en trop attendent l'image suivante
     if(astarSpent > 6) return PLAN_DEFER;
     const tA = performance.now();
     const path = findTilePath(sx, sy, gx, gy, seed);
-    if(!path){ astarSpent += performance.now() - tA; return null; }
+    if(!path){
+      astarSpent += performance.now() - tA;
+      if(failGoal.size > 400) failGoal.clear();
+      failGoal.set(fk, now);
+      return null;
+    }
     const out = smoothTilePath(path, x0, y0);
     astarSpent += performance.now() - tA;
     if(out.length){
@@ -2800,14 +2937,32 @@
 
   // Avance l'unité vers (u.tx, u.ty) en contournant l'eau et les arbres. true à l'arrivée
   // (ou si la cible est inaccessible : u._stuck vaut alors true et l'unité ne bouge pas).
-  function moveUnit(u, speed, dt){
+  // own : 0 = ennemi (comportement d'origine) ; 1 = villageois ; 2 = soldat du joueur.
+  // Les unités du joueur traversent les autres unités (aucune poussée), ne passent ni sur l'eau, ni dans les arbres, ni dans les murs,
+  // et ne forcent jamais un passage bloqué : elles attendent, recalculent leur trajet, puis abandonnent au bout de quelques secondes.
+  function moveUnit(u, speed, dt, own){
+    if(!own) return moveUnitCore(u, speed, dt, 0);
+    if(wallsDirty) rebuildWallGrid();
+    solidWalls = true;
+    try { return moveUnitCore(u, speed, dt, own); } finally { solidWalls = false; }
+  }
+  function moveUnitCore(u, speed, dt, own){
     const key = Math.floor(u.tx / TILE) * 4096 + Math.floor(u.ty / TILE);
     if(u._pk !== key){
+      if(own === 2 && u._waitUntil && performance.now() < u._waitUntil) return false;   // passage bloqué : elle attend un peu avant de réessayer
       u._pk = key;
       if(!u._ps) u._ps = 1 + ((Math.random() * 0x7fffffff) | 0);
       const plan = planPath(u.x, u.y, u.tx, u.ty, u._ps);
       if(plan === PLAN_DEFER){ u._pk = null; return false; }   // budget de calcul de l'image épuisé : on réessaie à la suivante
-      if(!plan){ u._stuck = true; u._pk = null; u._path = null; return true; }
+      if(!plan){
+        if(own === 2 && wallCount > 0){   // aucun chemin : un mur bloque peut-être (détruit ou ouvert plus tard) → elle attend
+          const now = performance.now();
+          if(!u._noPath) u._noPath = now;
+          if(now - u._noPath < 3500){ u._pk = null; u._path = null; u._waitUntil = now + 500; return false; }
+        }
+        u._noPath = 0; u._stuck = true; u._pk = null; u._path = null; return true;
+      }
+      u._noPath = 0;
       u._path = plan.path;
     }
     let gx = u.tx, gy = u.ty;
@@ -2818,8 +2973,21 @@
       u._pk = null; u._path = null;
       return true;
     }
-    u.x += (dx / dist) * speed * dt;
-    u.y += (dy / dist) * speed * dt;
+    const stx = (dx / dist) * speed * dt, sty = (dy / dist) * speed * dt;
+    if(!own || !isWalkablePx(u.x, u.y)){   // ennemis : inchangé ; unité déjà posée sur une case interdite : elle en sort librement
+      u.x += stx; u.y += sty;
+      return false;
+    }
+    if(isWalkablePx(u.x + stx, u.y + sty)){ u.x += stx; u.y += sty; u._blk = 0; u._blkTot = 0; }
+    else if(isWalkablePx(u.x + stx, u.y)){ u.x += stx; }       // elle glisse le long de l'obstacle
+    else if(isWalkablePx(u.x, u.y + sty)){ u.y += sty; }
+    else {                                                      // bloquée : elle attend, puis recalcule son chemin
+      u._blk = (u._blk || 0) + dt;
+      if(u._blk >= 0.5){
+        u._blkTot = (u._blkTot || 0) + u._blk; u._blk = 0; u._pk = null;
+        if(u._blkTot > 3){ u._blkTot = 0; u._stuck = true; u._path = null; return true; }
+      }
+    }
     return false;
   }
 
@@ -2832,7 +3000,7 @@
   }
 
   // Un ordre donné sur l'eau est ramené à la tuile praticable la plus proche
-  function snapToWalkable(px, py){
+  function snapToWalkableRaw(px, py){
     const tx = Math.floor(px / TILE), ty = Math.floor(py / TILE);
     if(isWalkableTile(tx, ty)) return {x: px, y: py};
     for(let r = 1; r <= 20; r++){
@@ -2848,6 +3016,13 @@
       if(best) return {x: best[0]*TILE + TILE/2, y: best[1]*TILE + TILE/2};
     }
     return {x: px, y: py};
+  }
+
+  function snapToWalkable(px, py, own){
+    if(!own) return snapToWalkableRaw(px, py);
+    if(wallsDirty) rebuildWallGrid();
+    solidWalls = true;
+    try { return snapToWalkableRaw(px, py); } finally { solidWalls = false; }
   }
 
   function generateMap(){
@@ -3166,6 +3341,7 @@
     if(i < 0) return;
     const isAcademyAi = b.type === 'academie' && b.owner === 'ai';
     buildings.splice(i, 1);
+    if(b.type === 'mur') wallsDirty = true;
     for(let y = b.y; y < b.y + b.h; y++) for(let x = b.x; x < b.x + b.w; x++) if(map[y] && map[y][x]) map[y][x].occupied = false;
     const def = BUILDINGS[b.type];
     if(b.owner !== 'ai' && b.built !== false && def && def.cap) cap = Math.max(0, cap - def.cap);
@@ -3883,7 +4059,7 @@
           v.state = 'moving';
         }
       } else if(v.state === 'moving'){
-        if(moveUnit(v, VILLAGER_SPEED, dt)){
+        if(moveUnit(v, VILLAGER_SPEED, dt, 1)){
           if(v._stuck){                             // cible inaccessible : on en cherche une autre
             v._stuck = false;
             releaseTarget(v);
@@ -3924,7 +4100,7 @@
           sendHome(v);
         }
       } else if(v.state === 'returning'){
-        if(moveUnit(v, VILLAGER_SPEED, dt)){
+        if(moveUnit(v, VILLAGER_SPEED, dt, 1)){
           v._stuck = false;
           if(v.carryType) stock[v.carryType] += v.carryAmount;
           v.carryType = null; v.carryAmount = 0;
@@ -3947,7 +4123,7 @@
       if(s._delay > 0){ s._delay -= dt; continue; }
       if(s.moving){
         s._post = false;
-        const arrived = moveUnit(s, SOLDIER_SPEED * forgeSpeedMult(), dt), wasStuck = s._stuck;
+        const arrived = moveUnit(s, SOLDIER_SPEED * forgeSpeedMult(), dt, 2), wasStuck = s._stuck;
         if(arrived){
           s._stuck = false; s.moving = false; s._arrWait = 0;
           if(wasStuck && s.slotX !== undefined){ s.slotX = s.x; s.slotY = s.y; }   // place inaccessible : on garde l'endroit actuel
@@ -4205,6 +4381,7 @@
       return;
     }
     selectedBuilding = null; // on ne construit plus : on donne des ordres aux troupes
+    setSelPool(matching);
     soldiers.forEach(s=> s.selected = troopMatches(s, mode));
     groupSelect = true;
     refreshBottomBarSelection();
@@ -4237,7 +4414,43 @@
   });
 
   /* ================= POSTURE & FORMATION ================= */
+  // Sélection globale (zone, boutons rapides) : on garde la liste d'origine pour pouvoir n'en garder que les chevaliers ou que les archers,
+  // puis revenir à toute la sélection.
+  let selPool = new Set();
+  const selFilterEl = document.getElementById('sel-filter');
+  const selFilterBtns = [...selFilterEl.querySelectorAll('[data-selfilter]')];
+  function setSelPool(list){ selPool = new Set(list); }
+  function updateSelFilter(){
+    let selList = soldiers.filter(s => s.selected);
+    if(selList.some(s => !selPool.has(s))){ selPool = new Set(selList); }   // sélection faite autrement : elle devient la nouvelle réserve
+    let pe = 0, pa = 0, se = 0, sa = 0;
+    for(const s of soldiers){
+      if(!selPool.has(s)) continue;
+      if(s.kind === 'archer'){ pa++; if(s.selected) sa++; } else { pe++; if(s.selected) se++; }
+    }
+    const mixed = pe > 0 && pa > 0;
+    selFilterEl.style.display = mixed ? '' : 'none';
+    if(!mixed) return;
+    const counts = {epeiste: pe, archer: pa, all: pe + pa};
+    selFilterBtns.forEach(btn => {
+      const mode = btn.dataset.selfilter;
+      const nEl = btn.querySelector('.ob-n');
+      if(nEl.textContent !== String(counts[mode])) nEl.textContent = counts[mode];
+      const on = mode === 'all' ? (se === pe && sa === pa) : (mode === 'archer' ? (sa === pa && se === 0) : (se === pe && sa === 0));
+      btn.classList.toggle('active', on);
+    });
+  }
+  selFilterBtns.forEach(btn => btn.addEventListener('click', ()=>{
+    const mode = btn.dataset.selfilter;
+    soldiers.forEach(s => { s.selected = selPool.has(s) && troopMatches(s, mode); });
+    groupSelect = true;
+    refreshBottomBarSelection();
+    const n = soldiers.filter(s => s.selected).length;
+    showToast(n + (n > 1 ? ' troupes sélectionnées' : ' troupe sélectionnée'));
+  }));
+
   function updateOrderBarButtons(){
+    updateSelFilter();
     let nSel = 0, nHold = 0;
     for(const s of soldiers) if(s.selected){ nSel++; if(s.stance === 'tenir') nHold++; }
     const allHold = nSel > 0 && nHold === nSel;
@@ -4380,6 +4593,7 @@
         hp:Math.round(buildingMaxHp(b.id) * forgeHpBuildMult()), maxHp:Math.round(buildingMaxHp(b.id) * forgeHpBuildMult())});
       if(b.id === 'port') buildings[buildings.length - 1].dock = findDockTile(x0, y0, size);
       connectTileToMain(x0, y0);
+      if(b.id === 'mur') wallsDirty = true;
       showToast(b.name + ' en construction...');
       selectedBuilding = null;
       refreshBottomBarSelection();
@@ -4427,7 +4641,7 @@
       const sx = px - o.x, sy = py - o.y;
       const wx = ((sx/TILE_W + sy/TILE_H) + 0.5) * TILE;
       const wy = ((sy/TILE_H - sx/TILE_W) + 0.5) * TILE;
-      const dest = snapToWalkable(wx, wy);
+      const dest = snapToWalkable(wx, wy, true);
       // Formation en ligne / carré / rond / rectangle : on montre d'abord un aperçu (à déplacer, tourner, valider)
       if(selectedSoldiers.length > 1 && formationShape !== 'auto'){
         fmtStartOrMove(dest.x, dest.y, selectedSoldiers);
@@ -4589,6 +4803,7 @@
       if(p.x >= a.x && p.x <= b.x && py >= a.y && py <= b.y) found.push(s);
     }
     selectedBuilding = null;
+    setSelPool(found);
     soldiers.forEach(s=> s.selected = found.includes(s));
     groupSelect = found.length > 0;
     refreshBottomBarSelection();
@@ -5929,11 +6144,7 @@
       const x0 = Math.max(xa, sum - yb), x1 = Math.min(xb, sum - ya);
       for(let x = x0; x <= x1; x++){ const y = sum - x; drawGroundBase(map[y][x], x, y, offX + (x - y) * hw, offY + (x + y) * hh); }
     }
-    const fl = [];
-    for(let y = ya; y <= yb; y++) for(let x = xa; x <= xb; x++){
-      if(map[y][x].ford) fl.push({x, y, px: offX + (x - y) * hw, py: offY + (x + y) * hh});
-    }
-    if(fl.length) drawFordBlock(fl);
+    // (les gués ne sont plus dessinés à part : voir bakeFords(), ce sont de vraies cases de terre)
   }
   function buildChunk(cx, cy, sc){
     const b = chunkBounds(cx, cy);
@@ -6795,10 +7006,10 @@
       // grosses batailles : chaque unité n'est repoussée qu'une image sur 3 (poussée triplée)
       const phases = soldiers.length + enemyTroops.length > 4000 ? 4 : 3;
       const ph = sepFrame % phases;
-      separateUnits(soldiers, 30, dt*phases, ph, phases);
+      settleIdleSoldiers(dt*phases, ph, phases);
       separateUnits(enemyTroops, 30, dt*phases, ph, phases);
     } else {
-      separateUnits(soldiers, 30, dt);
+      settleIdleSoldiers(dt, 0, 1);
       separateUnits(enemyTroops, 30, dt);
     }
     separateVillagers(dt);
@@ -6995,6 +7206,7 @@
     }
 
     const nowB = performance.now();
+    wallsDirty = true;
     buildings = (data.buildings||[]).map(b=>{
       const o = {x:b.x, y:b.y, w:b.w||1, h:b.h||1, type:b.type, maxHp: buildingMaxHp(b.type), owner: b.owner || undefined};
       o.hp = b.hp != null ? b.hp : o.maxHp;
@@ -7786,6 +7998,23 @@
 
   /* ================= CHANGELOG ================= */
   const CHANGELOG = [
+    {
+      version: 'v0.45',
+      title: 'Choisir chevaliers ou archers dans une sélection',
+      changes: [
+        "Quand une sélection globale (zone ou boutons rapides) contient des chevaliers ET des archers, trois boutons apparaissent dans la barre d'ordres : ne garder que les chevaliers, que les archers, ou revenir à toute la sélection"
+      ]
+    },
+    {
+      version: 'v0.44',
+      title: 'Ponts en cases normales, troupes plus fluides',
+      changes: [
+        "Les gués ne sont plus des blocs de pierre : ce sont de vraies cases de terre (les mêmes que le reste de la carte), avec les bords de berge qui s'ajustent tout seuls",
+        "Les troupes ne se poussent plus : celles qui marchent traversent les autres soldats, et seules celles au repos s'écartent doucement quand elles se chevauchent",
+        "Une troupe ne force plus un passage bloqué : elle glisse le long de l'obstacle, attend, recalcule son chemin, et n'abandonne qu'après quelques secondes",
+        "Les murs sont maintenant infranchissables pour tes troupes et tes villageois (les portes restent ouvertes)"
+      ]
+    },
     {
       version: 'v0.43',
       title: 'Sol, cases et collisions',
