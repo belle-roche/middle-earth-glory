@@ -1575,14 +1575,25 @@
 
   // Plafond de résolution du canvas : un écran 3x (iPhone) a 2,25x plus de pixels à remplir qu'en 2x,
   // pour un rendu pixel art quasi identique.
-  function getDpr(){ return Math.min(window.devicePixelRatio || 1, 2); }
+  // La résolution est maintenant adaptative (voir « PERFORMANCES » plus bas) : elle monte tant que l'appareil a de la marge
+  // (jusqu'à la densité réelle de l'écran, x3 au maximum), et baisse si l'appareil peine. Le nombre de pixels du canvas reste plafonné
+  // selon la mémoire de l'appareil, car un canvas trop grand fait planter ou vider la page sur mobile.
+  const hw = { mem: navigator.deviceMemory || 4, cores: navigator.hardwareConcurrency || 4 };
+  const MAX_CANVAS_PX = hw.mem >= 8 ? 14e6 : (hw.mem >= 4 ? 8.5e6 : 4.5e6);
+  const DPR_HARD_MAX = Math.min(window.devicePixelRatio || 1, 3);
+  let targetDpr = Math.min(window.devicePixelRatio || 1, 2);   // départ prudent ; le gouverneur ajuste ensuite
+  try{ const sv = parseFloat(localStorage.getItem('meg_dpr')); if(sv >= 0.5 && sv <= DPR_HARD_MAX) targetDpr = sv; }catch(e){}
+  let effDpr = targetDpr;
+  function getDpr(){ return effDpr; }
+  function maxDprForSize(w, h){ return Math.max(0.5, Math.min(DPR_HARD_MAX, Math.sqrt(MAX_CANVAS_PX / Math.max(1, w * h)))); }
   function resizeCanvas(){
     const rect = wrap.getBoundingClientRect();
-    const dpr = getDpr();
+    effDpr = Math.max(0.5, Math.min(targetDpr, maxDprForSize(rect.width, rect.height)));
+    const dpr = effDpr;
     canvas.style.width = rect.width + 'px';
     canvas.style.height = rect.height + 'px';
-    canvas.width = Math.floor(rect.width * dpr);
-    canvas.height = Math.floor(rect.height * dpr);
+    canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+    canvas.height = Math.max(1, Math.floor(rect.height * dpr));
     ctx.setTransform(dpr,0,0,dpr,0,0);
     ctx.imageSmoothingEnabled = false;
     refreshCssSize();
@@ -2929,7 +2940,7 @@
     const ft = failGoal.get(fk);
     if(ft && now - ft < 1500) return null;
     // Budget : au plus ~6 ms de recherche de chemin par image ; les troupes en trop attendent l'image suivante
-    if(astarSpent > 6) return PLAN_DEFER;
+    if(astarSpent > astarBudget) return PLAN_DEFER;
     const tA = performance.now();
     const path = findTilePath(sx, sy, gx, gy, seed);
     if(!path){
@@ -6224,7 +6235,7 @@
   // dans un canvas à part, puis chaque image n'a plus qu'à recopier une vingtaine de blocs au lieu de dessiner
   // des milliers de cases. Les blocs sont à la résolution utile (0,25 à 1) et recréés si le zoom change.
   // Chaque bloc redessine aussi 4 cases de marge voisines, pour que les brins d'herbe et les gués se raccordent.
-  const CHUNK = 16, CHUNK_PX_BUDGET = 22e6;
+  const CHUNK = 16, CHUNK_PX_BUDGET = hw.mem >= 8 ? 36e6 : (hw.mem >= 4 ? 24e6 : 12e6);
   const groundChunks = new Map();
   let groundChunkPx = 0, groundChunkTick = 0;
   function groundChunkReset(){ groundChunks.clear(); groundChunkPx = 0; }
@@ -7067,42 +7078,100 @@
   let sepFrame = 0;
   let minimapFrame = 0;
   let trainHudAt = 0, uiAt = 0, hudAt = 0, alertAt = 0;   // l'interface n'a pas besoin d'être recalculée à chaque image
-  function loop(now){
-    const dt = Math.min(0.05, (now - lastT)/1000);
-    lastT = now;
-    if(gameOver){ render(); requestAnimationFrame(loop); return; }
-
-    if(joyActive && (joyVecX!==0 || joyVecY!==0)){
-      panOffsetX += joyVecX*PAN_SPEED*dt/zoom;
-      panOffsetY += joyVecY*PAN_SPEED*dt/zoom;
-      clampPan();
+  /* ================= PERFORMANCES, MÉMOIRE, SÉCURITÉ ================= */
+  // Filet de sécurité : avant, la moindre erreur dans un module interrompait la boucle (jeu figé, « crash pour rien »).
+  // Chaque module est maintenant isolé : s'il échoue, le reste continue ; s'il échoue 5 fois d'affilée il est mis en pause 3 s.
+  let loopNow = 0, errorCount = 0, errToastAt = 0;
+  const guardState = {};
+  function reportError(name, err, quiet){
+    errorCount++;
+    if(errorCount <= 25 || errorCount % 200 === 0) console.error('[incident : ' + name + ']', err);
+    if(quiet) return;
+    const t = performance.now();
+    if(t - errToastAt > 20000){
+      errToastAt = t;
+      try{ showToast(ICO('avertir') + ' Un incident interne a été corrigé automatiquement : le jeu continue'); }catch(e){}
     }
-    keyboardPan(dt, heldKeys.has('c:ShiftLeft') || heldKeys.has('c:ShiftRight'));
+  }
+  function recoverFromError(name){
+    if(name === 'render'){ groundChunkReset(); for(const k in STRIPS) delete STRIPS[k]; }
+    projectiles.length = 0; combatTexts.length = 0;
+    pathCacheAt = 0;
+  }
+  function guard(name, fn, a, b, always){
+    const g = guardState[name] || (guardState[name] = {fails: 0, skipUntil: 0});
+    if(!always && g.skipUntil > loopNow) return;
+    try{ fn(a, b); g.fails = 0; }
+    catch(err){
+      g.fails++;
+      reportError(name, err);
+      if(g.fails >= 5){
+        g.fails = 0;
+        if(!always) g.skipUntil = loopNow + 3000;
+        try{ recoverFromError(name); }catch(e){}
+      }
+    }
+  }
+  window.addEventListener('error', (e)=> reportError('global', e.error || e.message, true));
+  window.addEventListener('unhandledrejection', (e)=> reportError('promesse', e.reason, true));
 
-    astarSpent = 0;
-    const pf0 = performance.now();
-    if(gameMode === 'pvp') pvpTopUp();
-    updateVillagers(dt);
-    updateSoldiers(dt);
-    updateBoats(dt, now);
-    enemyHitBoats(now);
-    updateBoarding(now);
-    updateBoatQueue(now);
-    if(boatUiOpen() && now - lastBoatUi > 400){ lastBoatUi = now; refreshBoatUi(); }
-    if(now - lastBoatBar > 250){ lastBoatBar = now; updateBoatBar(); }
-    updateWaves(now);
-    updateCamps(dt, now);
-    updateAi(now, dt);
-    const pf1 = performance.now();
-    const pc0 = performance.now();
-    rebuildCombatGrids();
-    const pc1 = performance.now();
-    updateSoldierDefense(now);
-    updateTowers(now);
-    const pc2 = performance.now();
-    updateCombat(dt, now);
-    const pf2 = performance.now();
-    perfSub.grid = pc1 - pc0; perfSub.def = pc2 - pc1; perfSub.fight = pf2 - pc2;
+  // Perte du contexte graphique (mémoire, veille, GPU saturé) : on reconstruit tout au retour au lieu de rester sur un écran vide
+  let ctxLost = false;
+  canvas.addEventListener('contextlost', (e)=>{ e.preventDefault(); ctxLost = true; });
+  canvas.addEventListener('contextrestored', ()=>{ ctxLost = false; resizeCanvas(); groundChunkReset(); for(const k in STRIPS) delete STRIPS[k]; });
+
+  // Gouverneur : mesure le temps de travail par image et ajuste la résolution de rendu et le budget de calcul.
+  //  - appareil à l'aise (peu de temps de travail, aucune image perdue) : on monte la résolution, jusqu'à la densité de l'écran ;
+  //  - appareil qui peine (images trop longues ou perdues) : on la baisse par paliers, avant que le navigateur ne rame ou ne plante.
+  let astarBudget = 6;
+  const gov = { t0: 0, n: 0, work: 0, intervals: [], stress: 0, head: 0, lastChange: 0, saved: 0 };
+  function setTargetDpr(v){
+    const rect = wrap.getBoundingClientRect();
+    v = Math.max(0.5, Math.min(maxDprForSize(rect.width, rect.height), v));
+    if(Math.abs(v - targetDpr) < 0.02) return false;
+    targetDpr = v;
+    resizeCanvas();
+    return true;
+  }
+  function govern(now, dtRaw, workMs){
+    if(!gameStarted || document.hidden || dtRaw > 250 || dtRaw <= 0){ gov.t0 = 0; return; }   // menu, onglet masqué, gros trou : pas de mesure
+    if(!gov.t0){ gov.t0 = now; gov.n = 0; gov.work = 0; gov.intervals.length = 0; }
+    gov.n++; gov.work += workMs; gov.intervals.push(dtRaw);
+    if(now - gov.t0 < 1500) return;
+    const sorted = gov.intervals.slice().sort((x, y) => x - y);
+    const base = Math.max(14, Math.min(34, sorted[Math.floor(sorted.length * 0.25)] || 16.7));   // ≈ rythme de l'écran (au moins 14 ms)
+    const avgWork = gov.work / gov.n;
+    let drops = 0; for(const v of gov.intervals) if(v > base * 1.5 + 2) drops++;
+    const dropRatio = drops / gov.n;
+    gov.t0 = 0;
+    const stress = avgWork > base * 0.85 || dropRatio > 0.18;
+    const headroom = avgWork < base * 0.45 && dropRatio < 0.04;
+    gov.stress = stress ? gov.stress + 1 : 0;
+    gov.head = headroom ? gov.head + 1 : 0;
+    astarBudget = stress ? 3.5 : (headroom ? 9 : 6);
+    if(stress && gov.stress >= 2 && now - gov.lastChange > 3000){
+      if(setTargetDpr(targetDpr * 0.85)){ gov.lastChange = now; gov.stress = 0; }
+    } else if(headroom && gov.head >= 5 && now - gov.lastChange > 8000){
+      if(effDpr < DPR_HARD_MAX - 0.02 && setTargetDpr(targetDpr * 1.15)){ gov.lastChange = now; gov.head = 0; }
+    }
+    if(gov.lastChange && gov.saved !== gov.lastChange && now - gov.lastChange > 20000){   // réglage stable depuis 20 s : on s'en souvient
+      gov.saved = gov.lastChange;
+      try{ localStorage.setItem('meg_dpr', targetDpr.toFixed(2)); }catch(e){}
+    }
+  }
+
+  // Mémoire : onglet masqué (le navigateur peut alors tuer la page) -> on libère les caches graphiques et on sauvegarde
+  document.addEventListener('visibilitychange', ()=>{
+    if(document.visibilityState === 'hidden'){
+      if(gameStarted && !gameOver) saveGame();
+      groundChunkReset(); for(const k in STRIPS) delete STRIPS[k];
+    }
+  });
+  window.addEventListener('pagehide', ()=>{ if(gameStarted && !gameOver) saveGame(); });
+  // Sauvegarde automatique locale : un plantage ne fait plus perdre la partie
+  setInterval(()=>{ if(gameStarted && !gameOver && !document.hidden) saveGame(); }, 60000);
+
+  function separationStep(dt){
     // Dans les très grosses batailles, séparer les deux camps en alternance (plutôt que les deux
     // à chaque image) divise ce coût par ~2 ; chaque camp est quand même repositionné toutes les
     // deux images, ce qui reste imperceptible au milieu d'une mêlée aussi dense.
@@ -7118,30 +7187,73 @@
       separateUnits(enemyTroops, 30, dt);
     }
     separateVillagers(dt);
+  }
+  function loop(now){
+    loopNow = now;
+    const dtRaw = now - lastT;
+    lastT = now;
+    const w0 = performance.now();
+    try{ loopBody(now, Math.min(0.05, dtRaw/1000)); }catch(err){ reportError('boucle', err); }
+    govern(now, dtRaw, performance.now() - w0);
+    requestAnimationFrame(loop);
+  }
+  function loopBody(now, dt){
+    if(gameOver){ if(!ctxLost) guard('render', render, 0, 0, true); return; }
+
+    if(joyActive && (joyVecX!==0 || joyVecY!==0)){
+      panOffsetX += joyVecX*PAN_SPEED*dt/zoom;
+      panOffsetY += joyVecY*PAN_SPEED*dt/zoom;
+      clampPan();
+    }
+    guard('clavier', keyboardPan, dt, heldKeys.has('c:ShiftLeft') || heldKeys.has('c:ShiftRight'));
+
+    astarSpent = 0;
+    const pf0 = performance.now();
+    if(gameMode === 'pvp') guard('pvp', pvpTopUp);
+    guard('villageois', updateVillagers, dt);
+    guard('soldats', updateSoldiers, dt);
+    guard('bateaux', updateBoats, dt, now);
+    guard('tirs-bateaux', enemyHitBoats, now);
+    guard('embarquement', updateBoarding, now);
+    guard('file-bateaux', updateBoatQueue, now);
+    if(boatUiOpen() && now - lastBoatUi > 400){ lastBoatUi = now; guard('menu-bateau', refreshBoatUi); }
+    if(now - lastBoatBar > 250){ lastBoatBar = now; guard('barre-bateau', updateBoatBar); }
+    guard('vagues', updateWaves, now);
+    guard('camps', updateCamps, dt, now);
+    guard('ia', updateAi, now, dt);
+    const pf1 = performance.now();
+    const pc0 = performance.now();
+    guard('grilles', rebuildCombatGrids);
+    const pc1 = performance.now();
+    guard('defense', updateSoldierDefense, now);
+    guard('tours', updateTowers, now);
+    const pc2 = performance.now();
+    guard('combat', updateCombat, dt, now);
+    const pf2 = performance.now();
+    perfSub.grid = pc1 - pc0; perfSub.def = pc2 - pc1; perfSub.fight = pf2 - pc2;
+    guard('separation', separationStep, dt);
     const pf3 = performance.now();
-    if(walkLabelDirty && now - lastRelabel > 6000){ relabelWalk(); lastRelabel = now; }
-    updateBuildings(now);
-    updateTraining(now);
-    if(now - trainHudAt > 100){ trainHudAt = now; updateTrainHud(now); }
-    updateResearch(now);
-    updateForge(now);
-    if(now - uiAt > 150){ uiAt = now; updateCancelBtnVisibility(); }
-    if(now - hudAt > 200){ hudAt = now; updateHUD(); }
+    if(walkLabelDirty && now - lastRelabel > 6000){ guard('zones', relabelWalk); lastRelabel = now; }
+    guard('batiments', updateBuildings, now);
+    guard('formation', updateTraining, now);
+    if(now - trainHudAt > 100){ trainHudAt = now; guard('hud-formation', updateTrainHud, now); }
+    guard('recherche', updateResearch, now);
+    guard('forge', updateForge, now);
+    if(now - uiAt > 150){ uiAt = now; guard('interface', updateCancelBtnVisibility); }
+    if(now - hudAt > 200){ hudAt = now; guard('hud', updateHUD); }
     const pf4 = performance.now();
-    render();
+    if(!ctxLost) guard('render', render, 0, 0, true);
     const pf5 = performance.now();
     minimapFrame++;
-    if(soldiers.length + enemyTroops.length < 1000 || minimapFrame % 3 === 0) drawMinimap(now);
+    if(soldiers.length + enemyTroops.length < 1000 || minimapFrame % 3 === 0) guard('minicarte', drawMinimap, now);
     perfRecord(now, pf0, pf1, pf2, pf3, pf4, pf5, performance.now());
-    if(now - alertAt > 250){ alertAt = now; updateAttackAlert(now); }
+    if(now - alertAt > 250){ alertAt = now; guard('alertes', updateAttackAlert, now); }
 
-    if(tpOpen && now - lastTpRefresh > 400){ lastTpRefresh = now; updateTroopSummary(); }
+    if(tpOpen && now - lastTpRefresh > 400){ lastTpRefresh = now; guard('resume-troupes', updateTroopSummary); }
     if(panelOpen && now - lastPanelRefresh > 400){
       lastPanelRefresh = now;
-      renderVillagerPanel();
+      guard('panneau-villageois', renderVillagerPanel);
     }
-
-    requestAnimationFrame(loop);
   }
 
   /* ================= SAVE / LOAD ================= */
@@ -7525,7 +7637,7 @@
       'Rendu ' + rend.toFixed(1) + ' ms : sol ' + f(a.ground) + ' · effets ' + f(a.fx) + ' · prépa ' + prep.toFixed(1) + ' (total, dont sol+effets) · tri ' + f(a.sort) + ' · dessin ' + f(a.draw) + '\n' +
       'Minicarte ' + mini.toFixed(1) + ' ms\n' +
       'Troupes ' + soldiers.length + ' (toi) + ' + enemyTroops.length + ' (ennemi) · visibles ' + perfRender.visible + (perfRender.fast ? ' · voie rapide' : '') + ' · objets ' + perfRender.items + ' · effets ' + combatTexts.length + 't/' + projectiles.length + 'f · échelle x' + getDpr() + '\n' +
-      verdict;
+      verdict + '\nRésolution ×' + effDpr.toFixed(2) + ' (auto, max ×' + DPR_HARD_MAX.toFixed(1) + ') · budget chemins ' + astarBudget + ' ms · mémoire appareil ' + hw.mem + ' Go';
     perf.n = 0; perf.maxFrame = 0;
     for(const k in a) a[k] = 0;
   }
@@ -8103,6 +8215,17 @@
 
   /* ================= CHANGELOG ================= */
   const CHANGELOG = [
+    {
+      version: 'v0.47',
+      title: 'Performances adaptatives et stabilité',
+      changes: [
+        "Le jeu adapte maintenant sa résolution à l'appareil : il monte jusqu'à la densité réelle de l'écran (×3 max) tant qu'il y a de la marge, et baisse par paliers si l'appareil peine",
+        "Plus de « crash pour rien » : une erreur dans un module du jeu ne fige plus tout, le reste continue et le module fautif est remis en route automatiquement",
+        "Mémoire : plafond de pixels du canvas et du cache du sol selon la mémoire de l'appareil, libération des caches quand l'onglet passe en arrière-plan, reconstruction si le navigateur perd le contexte graphique",
+        "Sauvegarde automatique locale toutes les minutes (et quand l'onglet est masqué ou fermé)",
+        "Le budget de calcul des trajets s'ajuste lui aussi à la marge disponible ; F3 affiche la résolution et le budget en cours"
+      ]
+    },
     {
       version: 'v0.46',
       title: 'Bateaux : PV, portée réduite, déplacement libre, menu',
